@@ -23,25 +23,39 @@ def build_clients() -> dict[str, Any]:
     are omitted with a warning — the storefront keeps serving the
     chains it can.
     """
-    priv_key = (settings.wallet.private_key or "").strip()
-    if not priv_key:
-        logger.warning(
-            "[ALKAHEST] wallet.private_key not set; no chain clients will be "
-            "initialised."
-        )
-        return {}
+    # Resolve the signing credential: either a raw private key, or — when
+    # ``[wallet] signer = "waap"`` is set — the ``waap:<address>`` sentinel
+    # that routes signing through the external command (service.signing).
+    signer_kind = str(settings.get("wallet.signer", "") or "").strip().lower()
+    if signer_kind == "waap":
+        addr = str(settings.get("wallet.address", "") or "").strip()
+        if not addr:
+            logger.warning(
+                "[ALKAHEST] wallet.signer = \"waap\" requires wallet.address; "
+                "no chain clients will be initialised."
+            )
+            return {}
+        credential = f"waap:{addr}"
+    else:
+        credential = (settings.wallet.private_key or "").strip()
+        if not credential:
+            logger.warning(
+                "[ALKAHEST] wallet.private_key not set; no chain clients will be "
+                "initialised."
+            )
+            return {}
     if not CHAINS:
         logger.warning(
             "[ALKAHEST] no [chains.<name>] tables configured; nothing to build."
         )
         return {}
 
-    from alkahest_py import AlkahestClient
     from service.clients.alkahest import (
         get_alkahest_network,
         prewarm_alkahest_address_config_cache,
         resolve_alkahest_address_config,
     )
+    from service.signing import make_alkahest_client
 
     out: dict[str, Any] = {}
     for name, cc in CHAINS.items():
@@ -51,8 +65,8 @@ def build_clients() -> dict[str, Any]:
             address_config = resolve_alkahest_address_config(
                 network, config_path=cc.alkahest_address_config_path
             )
-            out[name] = AlkahestClient(
-                private_key=priv_key,
+            out[name] = make_alkahest_client(
+                credential,
                 rpc_url=cc.rpc_url,
                 address_config=address_config,
             )

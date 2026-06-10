@@ -144,16 +144,15 @@ def _sign(message: str, private_key: str) -> tuple[str, int]:
 
     Mirrors the seller's _check_buyer_signature verification: timestamp
     is appended to the message, and the full string is EIP-191 signed.
+
+    ``private_key`` may also be a ``waap:<address>`` external-signer
+    credential (see ``service.signing``) — dispatch happens there, so a
+    WaaP/MPC wallet with no raw key signs via ``waap-cli`` instead.
     """
-    from eth_account import Account
-    from eth_account.messages import encode_defunct
+    from service.signing import sign_message_eip191
 
     ts = int(time.time())
-    signed_message = f"{message}:{ts}"
-    msg_hash = encode_defunct(text=signed_message)
-    sig = Account.sign_message(msg_hash, private_key).signature.hex()
-    if not sig.startswith("0x"):
-        sig = "0x" + sig
+    sig = sign_message_eip191(f"{message}:{ts}", private_key)
     return sig, ts
 
 

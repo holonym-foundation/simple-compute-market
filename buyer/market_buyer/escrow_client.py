@@ -174,13 +174,13 @@ def make_create_escrow_fn(
     """
     def _create(escrows: list[EscrowTerms]) -> list[str]:
         # Late imports for the same reason as the builder.
-        from alkahest_py import AlkahestClient
         from service.clients.alkahest import (
             get_alkahest_network,
             get_escrow_kind_codec_by_address,
             prewarm_alkahest_address_config_cache,
             resolve_alkahest_address_config,
         )
+        from service.signing import make_alkahest_client
 
         buyer_escrows = [e for e in escrows if e.maker == "buyer"]
         if not buyer_escrows:
@@ -192,8 +192,10 @@ def make_create_escrow_fn(
             alkahest_network, config_path=addr_config_path,
         )
 
-        client = AlkahestClient(
-            private_key=private_key,
+        # `private_key` may be a raw key or a `waap:<address>` external-signer
+        # credential; the factory dispatches (see service.signing).
+        client = make_alkahest_client(
+            private_key,
             rpc_url=rpc_url,
             address_config=address_config,
         )
