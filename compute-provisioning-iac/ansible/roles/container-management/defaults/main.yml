@@ -30,3 +30,16 @@ container_no_new_privileges: true
 
 # Teardown: destroy removes the home volume; lease_end keeps it (resume/reclaim).
 container_remove_volume: true
+
+# Archive (cold storage) — when a lease ends unpaid (after grace), export the home
+# volume to S3-compatible object storage so the tenant can be RESTORED later, then
+# free the node. We archive STATE (the volume), never the container or an image.
+# Recommended endpoint: Hetzner Object Storage (same region; R2/B2/GCS also work).
+archive_workdir: "/var/lib/aex/archive"
+archive_s3_endpoint: ""                  # e.g. https://fsn1.your-objectstorage.com
+archive_s3_bucket: "aex-tenant-archives"
+archive_prefix: "tenants"
+# Client-side encryption (the volume holds a WaaP share). Set to enable `age`
+# encryption; key managed in TAP. Bucket SSE is the at-rest baseline when unset.
+archive_age_recipient: ""                # age public key (archive side)
+archive_age_identity: ""                 # age private key path (restore side)

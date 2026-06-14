@@ -42,3 +42,13 @@
   ansible.builtin.debug:
     var: check_data
   when: container_action == "check" and check_data is defined
+
+- name: Output container archive data
+  ansible.builtin.debug:
+    var: container_archive_data
+  when: container_action == "archive" and container_archive_data is defined
+
+- name: Output container restore data
+  ansible.builtin.debug:
+    var: container_restore_data
+  when: container_action == "restore" and container_restore_data is defined

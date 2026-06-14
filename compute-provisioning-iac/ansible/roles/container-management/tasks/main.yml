@@ -101,6 +101,26 @@
   tags:
     - container_check
 
+- name: Include container archive tasks
+  include_tasks:
+    file: container-archive.yml
+    apply:
+      tags:
+        - container_archive
+  when: container_action == "archive"
+  tags:
+    - container_archive
+
+- name: Include container restore tasks
+  include_tasks:
+    file: container-restore.yml
+    apply:
+      tags:
+        - container_restore
+  when: container_action == "restore"
+  tags:
+    - container_restore
+
 # ============================================
 # JSON Output and Error Handling
 # ============================================
