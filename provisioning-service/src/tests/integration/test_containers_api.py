@@ -24,22 +24,26 @@ from services.async_job_queue import AsyncJobQueue
 HOST = "aex-native-scm"
 CNAME = "aex-t-1"
 
+# Realistic ansible stdout: the json-output role emits an action-tagged JSON
+# object in a `msg: |-` block (the format `_extract_ansible_json` actually parses
+# under the default/yaml callback — see fix/container-result-parse).
 CONTAINER_CREATE_STDOUT = """\
 PLAY [Container Management Operations] ****************************************
 
-TASK [debug] ******************************************************************
-ok: [aex-native-scm] => {
-    "container_creation_data": {
-        "container_name": "aex-t-1",
-        "container_id": "deadbeefcafe",
-        "image": "nginx:alpine",
-        "status": "running",
-        "running": true,
-        "host": "aex-native-scm",
-        "home_volume": "aex-t-1-home",
-        "lease_id": ""
-    }
-}
+TASK [container-management : Output container creation result] ****************
+ok: [aex-native-scm] =>
+    msg: |-
+        {
+            "action": "create",
+            "container_name": "aex-t-1",
+            "container_id": "deadbeefcafe",
+            "image": "nginx:alpine",
+            "status": "running",
+            "running": true,
+            "host": "aex-native-scm",
+            "home_volume": "aex-t-1-home",
+            "lease_id": ""
+        }
 """
 
 
