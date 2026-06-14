@@ -1,0 +1,17 @@
+---
+# container-management — lease end: stop the container but KEEP the home volume
+# so the tenant can be resumed/reclaimed (mirrors the "never delete the
+# credential dir" rule from the legacy stop-tenant flow).
+
+- name: Stop container at lease end
+  community.docker.docker_container:
+    name: "{{ container_name }}"
+    state: stopped
+  register: container_lease_end_result
+
+- name: Assemble container lease_end result
+  ansible.builtin.set_fact:
+    container_lease_end_data:
+      container_name: "{{ container_name }}"
+      stopped: true
+      volume_retained: true

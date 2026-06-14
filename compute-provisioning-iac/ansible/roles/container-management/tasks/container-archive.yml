@@ -1,0 +1,75 @@
+---
+# container-management — archive a tenant to cold storage.
+# Exports the per-tenant home volume (WaaP credential + agent state) to
+# S3-compatible object storage so the agent can be RESTORED later, then frees
+# the provider node. Triggered after a lease ends unpaid + grace period.
+# We archive STATE (the volume), never the container or a per-tenant image.
+
+- name: Ensure archive workdir exists
+  ansible.builtin.file:
+    path: "{{ archive_workdir }}"
+    state: directory
+    mode: "0700"
+
+- name: Export home volume to a tarball
+  ansible.builtin.command: >-
+    docker run --rm
+    -v {{ container_name }}-home:/data:ro
+    -v {{ archive_workdir }}:/backup
+    alpine tar czf /backup/{{ container_name }}.tar.gz -C /data .
+  changed_when: true
+
+# The volume holds a WaaP share — encrypt client-side when an age recipient is
+# configured (recommended for production; key managed in TAP). Bucket SSE
+# (encrypt: true below) is the at-rest baseline when this is unset.
+- name: Encrypt archive (optional, recommended)
+  ansible.builtin.command: >-
+    age -r {{ archive_age_recipient }}
+    -o {{ archive_workdir }}/{{ container_name }}.tar.gz.age
+    {{ archive_workdir }}/{{ container_name }}.tar.gz
+  when: (archive_age_recipient | default('')) | length > 0
+  changed_when: true
+
+- name: Resolve archive object name
+  ansible.builtin.set_fact:
+    _archive_suffix: "{{ '.age' if ((archive_age_recipient | default('')) | length > 0) else '' }}"
+
+- name: Upload archive to object storage (S3-compatible)
+  amazon.aws.s3_object:
+    endpoint_url: "{{ archive_s3_endpoint }}"
+    bucket: "{{ archive_s3_bucket }}"
+    object: "{{ archive_prefix }}/{{ container_name }}.tar.gz{{ _archive_suffix }}"
+    src: "{{ archive_workdir }}/{{ container_name }}.tar.gz{{ _archive_suffix }}"
+    mode: put
+    encrypt: true
+  register: archive_upload
+
+- name: Free node — remove local artifacts, container, and home volume (now archived)
+  when: archive_upload is succeeded
+  block:
+    - name: Remove local tarball
+      ansible.builtin.file:
+        path: "{{ archive_workdir }}/{{ container_name }}.tar.gz"
+        state: absent
+    - name: Remove local encrypted tarball
+      ansible.builtin.file:
+        path: "{{ archive_workdir }}/{{ container_name }}.tar.gz.age"
+        state: absent
+    - name: Remove container
+      community.docker.docker_container:
+        name: "{{ container_name }}"
+        state: absent
+        force_kill: true
+    - name: Remove home volume (state now lives in object storage)
+      community.docker.docker_volume:
+        name: "{{ container_name }}-home"
+        state: absent
+
+- name: Assemble container archive result
+  ansible.builtin.set_fact:
+    container_archive_data:
+      container_name: "{{ container_name }}"
+      archived: true
+      archive_uri: "s3://{{ archive_s3_bucket }}/{{ archive_prefix }}/{{ container_name }}.tar.gz{{ _archive_suffix }}"
+      endpoint: "{{ archive_s3_endpoint }}"
+      encrypted: "{{ (archive_age_recipient | default('')) | length > 0 }}"

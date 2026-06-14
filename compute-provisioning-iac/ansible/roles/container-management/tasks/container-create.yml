@@ -1,0 +1,80 @@
+---
+# container-management — create a tenant container.
+# Each tenant gets its own named volume for $HOME (where the WaaP credential
+# lives), so a sibling container can never read it. Resource caps enforce
+# fair-share and prevent one tenant from starving the host.
+
+- name: Authenticate to Docker Hub (optional)
+  community.docker.docker_login:
+    username: "{{ dockerhub_username }}"
+    password: "{{ dockerhub_password }}"
+  when:
+    - (container_registry_type | default('')) == 'dockerhub'
+    - dockerhub_username is defined
+    - dockerhub_password is defined
+  no_log: true
+
+- name: Authenticate to generic registry (optional)
+  community.docker.docker_login:
+    registry_url: "{{ container_registry_url }}"
+    username: "{{ container_registry_username }}"
+    password: "{{ container_registry_password }}"
+  when:
+    - (container_registry_type | default('')) == 'generic'
+    - container_registry_url is defined
+    - container_registry_username is defined
+    - container_registry_password is defined
+  no_log: true
+
+- name: Pull tenant image
+  community.docker.docker_image:
+    name: "{{ container_image_ref }}"
+    source: pull
+    state: present
+
+- name: Ensure per-tenant home volume exists
+  community.docker.docker_volume:
+    name: "{{ container_name }}-home"
+    state: present
+    labels:
+      aex.tenant: "{{ container_name }}"
+      aex.lease: "{{ lease_id | default('') }}"
+
+- name: Run tenant container
+  community.docker.docker_container:
+    name: "{{ container_name }}"
+    image: "{{ container_image_ref }}"
+    state: started
+    restart_policy: "{{ container_restart_policy }}"
+    memory: "{{ container_memory }}"
+    cpus: "{{ container_cpus | float }}"
+    pids_limit: "{{ container_pids_limit | int }}"
+    read_only: "{{ container_read_only_rootfs | bool }}"
+    security_opts: "{{ ['no-new-privileges'] if (container_no_new_privileges | bool) else omit }}"
+    network_mode: "{{ container_network_mode }}"
+    env: "{{ container_env | default({}) }}"
+    volumes:
+      - "{{ container_name }}-home:{{ container_home_path }}"
+    labels:
+      aex.tenant: "{{ container_name }}"
+      aex.lease: "{{ lease_id | default('') }}"
+      aex.managed: "true"
+  register: container_run
+
+- name: Inspect container state
+  community.docker.docker_container_info:
+    name: "{{ container_name }}"
+  register: container_info_create
+
+- name: Assemble container creation result
+  ansible.builtin.set_fact:
+    container_creation_data:
+      container_name: "{{ container_name }}"
+      container_id: "{{ container_info_create.container.Id | default('') }}"
+      image: "{{ container_image_ref }}"
+      status: "{{ container_info_create.container.State.Status | default('unknown') }}"
+      running: "{{ container_info_create.container.State.Running | default(false) }}"
+      host: "{{ tenant_ssh_host | default(target_host) }}"
+      home_volume: "{{ container_name }}-home"
+      lease_id: "{{ lease_id | default('') }}"
+      created_at: "{{ container_info_create.container.Created | default('') }}"

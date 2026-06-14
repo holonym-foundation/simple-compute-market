@@ -1,0 +1,3 @@
+---
+# container-management handlers. None required yet — container lifecycle is
+# driven imperatively by the action tasks (docker_container state changes).

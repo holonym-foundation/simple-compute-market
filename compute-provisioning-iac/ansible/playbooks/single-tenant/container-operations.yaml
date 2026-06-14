@@ -1,0 +1,27 @@
+---
+# Container counterpart to vm-operations.yaml. Targets the [container_hosts]
+# inventory group (plain Docker hosts — no nested-virt needed). The provisioning
+# service passes the action + tenant params as --extra-vars.
+- name: Container Management Operations
+  hosts: container_hosts
+  gather_facts: no
+  vars:
+    # target_host: how the provisioner addresses the container host (inventory alias).
+    target_host: "{{ container_host | default('localhost') }}"
+    # tenant_ssh_host: address buyers use to reach this host, if any port-forwards
+    # are published. Falls back to target_host.
+    tenant_ssh_host: "{{ public_host | default(target_host) }}"
+    container_name: "{{ container_target | default('aex-tenant') }}"
+    container_action: "{{ container_action | default('list') }}"
+
+  roles:
+    - ../../roles/container-management
+
+  post_tasks:
+    - name: Summary of container operation
+      ansible.builtin.debug:
+        msg: |
+          Container Management Summary:
+          - Target Host: {{ target_host }}
+          - Action Performed: {{ container_action }}
+          - Container: {{ container_name }}

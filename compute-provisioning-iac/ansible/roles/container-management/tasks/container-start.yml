@@ -1,0 +1,15 @@
+---
+# container-management — start a stopped tenant container.
+
+- name: Start container
+  community.docker.docker_container:
+    name: "{{ container_name }}"
+    state: started
+  register: container_start_result
+
+- name: Assemble container start result
+  ansible.builtin.set_fact:
+    container_start_data:
+      container_name: "{{ container_name }}"
+      running: "{{ container_start_result.container.State.Running | default(true) }}"
+      status: "{{ container_start_result.container.State.Status | default('running') }}"
