@@ -363,8 +363,13 @@ class AnsibleJobService:
                 else self._settings.resolved_inventory_path
             )
 
+            playbook_path = (
+                self._settings.resolved_container_playbook_path
+                if getattr(params, "provisioning_type", "vm") == "container"
+                else self._settings.resolved_playbook_path
+            )
             run = self._ansible.start_playbook(
-                playbook_path=self._settings.resolved_playbook_path,
+                playbook_path=playbook_path,
                 inventory_path=inventory_path,
                 extra_vars_path=vars_path,
                 limit=params.vm_host,

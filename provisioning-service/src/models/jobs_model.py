@@ -72,6 +72,15 @@ class AnsibleJobParams:
     # Retry policy (per-job override)
     max_retries: Optional[int] = None
 
+    # Container provisioning (provisioning_type == "container") — AEX-native
+    # container tenants on plain Docker hosts. Reuses vm_host (container host
+    # alias), vm_target (container name), and vm_action (create/start/stop/
+    # destroy/monitor/lease_end/archive/restore/list/check).
+    provisioning_type: str = "vm"
+    container_image: Optional[str] = None
+    container_env: Optional[dict] = None
+    lease_id: Optional[str] = None
+
 
 # ---------------------------------------------------------------------------
 # Parsed result returned to AnsibleJobService after a playbook completes.
