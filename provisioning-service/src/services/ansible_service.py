@@ -340,9 +340,31 @@ class AnsibleService:
         ``wait_for_playbook``) is responsible for cleanup.
         """
         nonce = uuid.uuid4().hex
+        if getattr(params, "provisioning_type", "vm") == "container":
+            path = Path(f"/tmp/container_vars_{nonce}.yml")
+            path.write_text(self._build_container_vars(params), encoding="utf-8")
+            return path
         path = Path(f"/tmp/vm_vars_{nonce}.yml")
         path.write_text(self._build_vm_vars(params), encoding="utf-8")
         return path
+
+    def _build_container_vars(self, params: AnsibleJobParams) -> str:
+        """Render the extra-vars YAML for the container-operations playbook."""
+        lines = [
+            f"container_host: {params.vm_host}",
+            f"container_action: {params.vm_action}",
+        ]
+        if params.vm_target:
+            lines.append(f"container_target: {params.vm_target}")
+        if params.container_image:
+            lines.append(f'container_image: "{params.container_image}"')
+        if params.container_env:
+            lines.append(f"container_env: {json.dumps(params.container_env)}")
+        if params.lease_id:
+            lines.append(f'lease_id: "{params.lease_id}"')
+        if params.vm_expiry_at:
+            lines.append(f'container_expiry_at: "{params.vm_expiry_at}"')
+        return "\n".join(lines) + "\n"
 
     def _build_vm_vars(self, params: AnsibleJobParams) -> str:
         """Render the YAML string for the extra-vars file."""
@@ -452,6 +474,26 @@ class AnsibleService:
         a different network than buyers do, so the management address is not
         necessarily reachable by the tenant.
         """
+        if getattr(params, "provisioning_type", "vm") == "container":
+            # Containers are outbound-only (agents ship telemetry out); no SSH
+            # connection string. Just surface the host + the container fact JSON.
+            vm_host_ip = (
+                public_host
+                or self.lookup_public_host(params.vm_host)
+                or self.lookup_host_ip(params.vm_host)
+            )
+            return AnsibleRunResult(
+                stdout=result.stdout,
+                stderr=result.stderr,
+                ssh_port=None,
+                tenant_user=None,
+                vm_host_ip=vm_host_ip,
+                ssh_command=None,
+                ansible_result=self._extract_ansible_json(
+                    result.stdout, params.vm_action, provisioning_type="container"
+                ),
+                process_id=result.process_id,
+            )
         ssh_port = self._extract_ssh_port(result.stdout, params.vm_host)
         tenant_user = self._extract_tenant_user(result.stdout, params.vm_host)
         vm_host_ip = (
@@ -540,8 +582,10 @@ class AnsibleService:
                         return None
         return None
 
-    def _extract_ansible_json(self, stdout: str, action: str) -> Optional[dict]:
-        fact_names = {
+    def _extract_ansible_json(
+        self, stdout: str, action: str, provisioning_type: str = "vm"
+    ) -> Optional[dict]:
+        vm_fact_names = {
             "create": "vm_creation_data",
             "list": "vm_list_data",
             "start": "vm_start_data",
@@ -555,6 +599,21 @@ class AnsibleService:
             "lease_remove": "vm_lease_remove_data",
             "check": "check_data",
         }
+        container_fact_names = {
+            "create": "container_creation_data",
+            "list": "container_list_data",
+            "start": "container_start_data",
+            "stop": "container_stop_data",
+            "destroy": "container_destroy_data",
+            "monitor": "container_monitoring_data",
+            "lease_end": "container_lease_end_data",
+            "check": "check_data",
+            "archive": "container_archive_data",
+            "restore": "container_restore_data",
+        }
+        fact_names = (
+            container_fact_names if provisioning_type == "container" else vm_fact_names
+        )
         fact_name = fact_names.get(action)
         if not fact_name:
             return None
