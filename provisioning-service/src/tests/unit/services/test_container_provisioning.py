@@ -110,6 +110,26 @@ class TestExtractContainerJson:
         )
         assert r and r["vm_name"] == "v1"
 
+    def test_extracts_real_ansible_msg_block(self):
+        # The live ansible callback renders debug output as YAML, so the role
+        # emits an action-tagged JSON object in a `msg: |-` block — this is the
+        # format the parser's fallback actually catches. Regression guard for
+        # the result-echo gap seen in the live E2E.
+        stdout = (
+            "TASK [container-management : Output container creation result] ***\n"
+            "ok: [aex-native-scm] =>\n"
+            "    msg: |-\n"
+            "        {\n"
+            '            "action": "create",\n'
+            '            "container_name": "aex-t-1",\n'
+            '            "running": true\n'
+            "        }\n"
+        )
+        r = _make_service()._extract_ansible_json(stdout, "create", provisioning_type="container")
+        assert r is not None
+        assert r["container_name"] == "aex-t-1"
+        assert r["running"] is True
+
 
 class TestContainerRequestModel:
     def test_create_to_params(self):
