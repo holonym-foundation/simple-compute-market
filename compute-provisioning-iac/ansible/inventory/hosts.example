@@ -29,3 +29,13 @@
 
 [kvms]
 # Reserved for future use. Leave empty.
+
+[container_hosts]
+# AEX-native container provider nodes (plain Docker hosts — no nested-virt needed).
+# Alias used in resources.csv (attribute.vm_host) for `virtualization_type=container`
+# rows. Targeted by playbooks/single-tenant/container-operations.yaml.
+# aex-native-scm ansible_host=<IP> ansible_user=root ansible_ssh_private_key_file=~/.ssh/id_ed25519
+#
+# Optional per-host args:
+#   public_host=<IP>   — address buyers use if it differs from ansible_host
+#   ansible_port=<port>

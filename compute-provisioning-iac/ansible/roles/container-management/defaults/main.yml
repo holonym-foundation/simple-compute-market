@@ -1,0 +1,32 @@
+---
+# container-management role — defaults for AEX-native container tenants.
+# Mirrors vm-management but provisions Docker containers (no nested-virt needed),
+# so it runs on plain cloud hosts (e.g. aex-native-scm). See compute-provisioning-iac
+# README "Docker Application Deployment" for the underlying primitives.
+
+container_runtime: docker
+
+# Default tenant image (override per-listing via `container_image`). The AEX agent
+# base image (recipe runtime) is published to a registry the provider can pull.
+container_default_image: "ghcr.io/holonym-foundation/aex-agent-base:latest"
+
+# Resource caps — fair-share + blast-radius. One tenant cannot starve the host.
+container_default_memory: "512m"
+container_default_cpus: "1.0"
+container_default_pids_limit: 256
+
+container_restart_policy: "unless-stopped"
+container_network_mode: "bridge"
+
+# The per-tenant $HOME holds the WaaP credential. It is mounted from a per-tenant
+# NAMED VOLUME that only this container mounts — so a sibling container can never
+# read it. This is the cross-tenant isolation guarantee (replaces the SEV-HIGH
+# shared-user model on the legacy box).
+container_home_path: "/home/agent/.home"
+
+# Hardening defaults
+container_read_only_rootfs: false
+container_no_new_privileges: true
+
+# Teardown: destroy removes the home volume; lease_end keeps it (resume/reclaim).
+container_remove_volume: true

@@ -1,0 +1,18 @@
+---
+# container-management — monitor a tenant container.
+
+- name: Inspect container
+  community.docker.docker_container_info:
+    name: "{{ container_name }}"
+  register: container_info_monitor
+
+- name: Assemble container monitor result
+  ansible.builtin.set_fact:
+    container_monitoring_data:
+      container_name: "{{ container_name }}"
+      exists: "{{ container_info_monitor.exists | default(false) }}"
+      status: "{{ container_info_monitor.container.State.Status | default('absent') }}"
+      running: "{{ container_info_monitor.container.State.Running | default(false) }}"
+      restart_count: "{{ container_info_monitor.container.RestartCount | default(0) }}"
+      started_at: "{{ container_info_monitor.container.State.StartedAt | default('') }}"
+      image: "{{ container_info_monitor.container.Config.Image | default('') }}"

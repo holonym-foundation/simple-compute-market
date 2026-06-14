@@ -1,0 +1,14 @@
+---
+# container-management — stop a running tenant container (volume retained).
+
+- name: Stop container
+  community.docker.docker_container:
+    name: "{{ container_name }}"
+    state: stopped
+  register: container_stop_result
+
+- name: Assemble container stop result
+  ansible.builtin.set_fact:
+    container_stop_data:
+      container_name: "{{ container_name }}"
+      stopped: true

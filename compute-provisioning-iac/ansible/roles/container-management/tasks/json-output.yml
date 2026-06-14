@@ -1,0 +1,44 @@
+---
+# container-management — JSON output formatting (mirrors vm-management/json-output.yml).
+# Each action emits its <action>_data fact as parsable JSON on stdout for the
+# provisioning service (ansible_service.parse_playbook_result) to capture.
+
+- name: Output container creation data
+  ansible.builtin.debug:
+    var: container_creation_data
+  when: container_action == "create" and container_creation_data is defined
+
+- name: Output container start data
+  ansible.builtin.debug:
+    var: container_start_data
+  when: container_action == "start" and container_start_data is defined
+
+- name: Output container stop data
+  ansible.builtin.debug:
+    var: container_stop_data
+  when: container_action == "stop" and container_stop_data is defined
+
+- name: Output container destroy data
+  ansible.builtin.debug:
+    var: container_destroy_data
+  when: container_action == "destroy" and container_destroy_data is defined
+
+- name: Output container monitor data
+  ansible.builtin.debug:
+    var: container_monitoring_data
+  when: container_action == "monitor" and container_monitoring_data is defined
+
+- name: Output container lease_end data
+  ansible.builtin.debug:
+    var: container_lease_end_data
+  when: container_action == "lease_end" and container_lease_end_data is defined
+
+- name: Output container list data
+  ansible.builtin.debug:
+    var: container_list_data
+  when: container_action == "list" and container_list_data is defined
+
+- name: Output container check data
+  ansible.builtin.debug:
+    var: check_data
+  when: container_action == "check" and check_data is defined

@@ -1,0 +1,115 @@
+---
+# container-management role — main task orchestration.
+# Mirrors roles/vm-management/tasks/main.yml but for Docker container tenants.
+# Dispatches on `container_action`: create | list | start | stop | destroy |
+# monitor | lease_end | check.
+
+# ============================================
+# Prerequisites and Setup
+# ============================================
+
+- name: Include prerequisites and validation
+  include_tasks:
+    file: prerequisites.yml
+    apply:
+      tags:
+        - always
+  tags:
+    - always
+
+# ============================================
+# Container Action-Specific Tasks
+# ============================================
+
+- name: Include container create tasks
+  include_tasks:
+    file: container-create.yml
+    apply:
+      tags:
+        - container_create
+  when: container_action == "create"
+  tags:
+    - container_create
+
+- name: Include container list tasks
+  include_tasks:
+    file: container-list.yml
+    apply:
+      tags:
+        - container_list
+  when: container_action == "list"
+  tags:
+    - container_list
+
+- name: Include container start tasks
+  include_tasks:
+    file: container-start.yml
+    apply:
+      tags:
+        - container_start
+  when: container_action == "start"
+  tags:
+    - container_start
+
+- name: Include container stop tasks
+  include_tasks:
+    file: container-stop.yml
+    apply:
+      tags:
+        - container_stop
+  when: container_action == "stop"
+  tags:
+    - container_stop
+
+- name: Include container destroy tasks
+  include_tasks:
+    file: container-destroy.yml
+    apply:
+      tags:
+        - container_destroy
+  when: container_action == "destroy"
+  tags:
+    - container_destroy
+
+- name: Include container monitor tasks
+  include_tasks:
+    file: container-monitor.yml
+    apply:
+      tags:
+        - container_monitor
+  when: container_action == "monitor"
+  tags:
+    - container_monitor
+
+- name: Include container lease end tasks
+  include_tasks:
+    file: container-lease-end.yml
+    apply:
+      tags:
+        - container_lease_end
+  when: container_action == "lease_end"
+  tags:
+    - container_lease_end
+
+- name: Include container check tasks
+  include_tasks:
+    file: container-check.yml
+    apply:
+      tags:
+        - container_check
+  when: container_action == "check"
+  tags:
+    - container_check
+
+# ============================================
+# JSON Output and Error Handling
+# ============================================
+
+- name: Include JSON output formatting
+  include_tasks:
+    file: json-output.yml
+    apply:
+      tags:
+        - always
+  tags:
+    - always
