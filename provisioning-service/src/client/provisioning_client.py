@@ -62,6 +62,7 @@ from models.vm_request_model import (
     ScheduleVmExpiryRequest,
     VmActionRequest,
 )
+from models.container_request_model import CreateContainerRequest
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +237,12 @@ class ProvisioningClient(_ProvisioningClientBase):
     async def create_vm(self, host: str, body: CreateVmRequest) -> JobSubmitResponse:
         """POST /api/v1/hosts/{host}/vms/"""
         return self._submit(await self._post(f"/api/v1/hosts/{host}/vms/", body))
+
+    async def create_container(
+        self, host: str, body: CreateContainerRequest
+    ) -> JobSubmitResponse:
+        """POST /api/v1/hosts/{host}/containers/"""
+        return self._submit(await self._post(f"/api/v1/hosts/{host}/containers/", body))
 
     async def list_vms(self, host: str, body: Optional[VmActionRequest] = None) -> JobSubmitResponse:
         """POST /api/v1/hosts/{host}/vms/ (list action)"""

@@ -34,6 +34,7 @@ from service.clients.alkahest import encode_recipient_demand, get_recipient_arbi
 from market_storefront.utils.sqlite_client import get_sqlite_client
 from client.provisioning_client import ProvisioningClient, ProvisioningError
 from models.vm_request_model import CreateVmRequest, ScheduleVmExpiryRequest
+from models.container_request_model import CreateContainerRequest
 from registry_client import RegistryClient, ListingRequest, UpdateListingRequest
 from market_policy.negotiation_thread import get_thread_store
 from .validation import determine_strategy_from_order
@@ -189,11 +190,16 @@ async def _do_provision(
     *,
     vm_host: str,
     vm_target: str,
+    virtualization_type: str = "vm",
     on_job_submitted: Callable[[str], Awaitable[None]] | None = None,
 ) -> dict:
-    """Submit a create VM job to the provisioning service and return the result.
+    """Submit a create job to the provisioning service and return the result.
 
-    ``on_job_submitted`` runs after the create_vm call returns the job_id but
+    Dispatches on ``virtualization_type``: a ``container`` resource provisions a
+    Docker container (outbound-only — no SSH credentials to fetch); anything
+    else provisions a VM (the default path).
+
+    ``on_job_submitted`` runs after the create call returns the job_id but
     before we start polling — gives the caller a hook to record the job_id
     in the settlement_jobs row so the buyer's GET /settle/{uid}/status can
     surface it while the job is still queued/running.
@@ -204,6 +210,25 @@ async def _do_provision(
         timeout=float(settings.provisioning.timeout),
     )
     async with client:
+        if virtualization_type == "container":
+            submit = await client.create_container(
+                vm_host, CreateContainerRequest(container_target=vm_target)
+            )
+            if on_job_submitted is not None:
+                try:
+                    await on_job_submitted(submit.job_id)
+                except Exception as exc:
+                    logger.warning(
+                        "[PROVISIONING] on_job_submitted callback failed for job %s: %s",
+                        submit.job_id, exc,
+                    )
+            job = await client.poll_until_complete(
+                submit.job_id,
+                timeout=float(settings.provisioning.timeout),
+                poll_interval=float(settings.provisioning.poll_interval),
+            )
+            return job.result or {}
+
         params: dict = {"vm_target": vm_target, "ssh_pubkey": ssh_public_key}
         if settings.provisioning.frp_server_addr:
             params["frp_server_addr"] = settings.provisioning.frp_server_addr
@@ -769,6 +794,9 @@ async def fulfill_compute_obligation(
             ssh_public_key,
             vm_host=reserved_vm_host,
             vm_target=vm_target,
+            virtualization_type=str(
+                (reserved.get("attributes") or {}).get("virtualization_type") or "vm"
+            ),
             on_job_submitted=_record_job_id,
         )
         # Split credentials out before serialising — passwords must never touch on-chain data.
