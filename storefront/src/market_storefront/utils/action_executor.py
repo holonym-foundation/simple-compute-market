@@ -454,9 +454,22 @@ async def publish_order_to_registry(order: Listing | dict) -> dict[str, Any]:
                 storefront_url=order_dict.get("seller") or BASE_URL_OVERRIDE,
             )
             payloads = {url: order_request for url in registry_client.urls}
-            results = await registry_client.publish_listing_per_registry(
-                payloads, private_key=settings.wallet.private_key,
-            )
+            # WaaP/MPC sellers have no exportable key — sign the publication
+            # envelope through the pluggable signer (waap-cli) instead of a raw
+            # key, exactly as escrow/negotiation already do.
+            _signer_kind = str(settings.get("wallet.signer", "") or "").strip().lower()
+            if _signer_kind == "waap":
+                from service.signing import sign_message_eip191
+                _addr = (settings.wallet.address or "").strip()
+                _cred = f"waap:{_addr}"
+                results = await registry_client.publish_listing_per_registry(
+                    payloads, address=_addr,
+                    sign_fn=lambda m: sign_message_eip191(m, _cred),
+                )
+            else:
+                results = await registry_client.publish_listing_per_registry(
+                    payloads, private_key=settings.wallet.private_key,
+                )
         await _record_publications(order_id, results)
         any_ok = any(r["success"] for r in results)
         if any_ok:
