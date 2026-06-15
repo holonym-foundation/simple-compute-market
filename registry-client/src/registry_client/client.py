@@ -108,15 +108,22 @@ class _RegistryClientBase:
         return {"If-Match": normalized}
 
     @staticmethod
-    def _publish_listing_body(listing: ListingRequest, private_key: str) -> tuple[dict, dict]:
+    def _publish_listing_body(
+        listing: ListingRequest, private_key=None, *, address=None, sign_fn=None
+    ) -> tuple[dict, dict]:
         """Returns (json_body, headers) for a publish POST /listings.
 
-        The signing identity is derived from ``private_key``; the registry
-        verifies the signature over ``create_listing:<identifier>:<timestamp>``
-        and creates the publisher lazily.
+        The signing identity is derived from ``private_key`` (raw-key sellers),
+        or — for WaaP/MPC sellers with no exportable key — from ``address`` plus a
+        pluggable ``sign_fn`` (e.g. waap-cli). The registry verifies the signature
+        over ``create_listing:<identifier>:<timestamp>`` and creates the publisher
+        lazily.
         """
-        identifier = _eip191_address(private_key)
-        auth = build_auth_headers(private_key, "create_listing", identifier)
+        identifier = (address or _eip191_address(private_key)).lower()
+        auth = build_auth_headers(
+            private_key, "create_listing", identifier,
+            identity_identifier=identifier, sign_fn=sign_fn,
+        )
         body = {
             **listing.to_dict(),
             "scheme": "eip191",
@@ -291,9 +298,14 @@ class RegistryClient(_RegistryClientBase):
     # /listings
     # ------------------------------------------------------------------
 
-    async def publish_listing(self, listing: ListingRequest, private_key: str) -> dict:
-        """POST /listings with EIP-191 auth (signer derived from the key)."""
-        body, hdrs = self._publish_listing_body(listing, private_key)
+    async def publish_listing(
+        self, listing: ListingRequest, private_key=None, *, address=None, sign_fn=None
+    ) -> dict:
+        """POST /listings with EIP-191 auth — raw key, or a pluggable ``sign_fn``
+        (+ known ``address``) for WaaP/MPC sellers with no exportable key."""
+        body, hdrs = self._publish_listing_body(
+            listing, private_key, address=address, sign_fn=sign_fn
+        )
         return await self._request(
             "POST", "/listings", json=body, headers=hdrs, expected=(201,),
         )

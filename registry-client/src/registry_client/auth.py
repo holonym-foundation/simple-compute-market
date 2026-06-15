@@ -43,12 +43,13 @@ def address_from_private_key(private_key: str) -> str:
 
 
 def build_auth_headers(
-    private_key: str,
+    private_key: str | None,
     operation: str,
     resource_id: str,
     *,
     identity_scheme: str = "eip191",
     identity_identifier: str | None = None,
+    sign_fn=None,
 ) -> dict[str, str]:
     """Build the auth headers expected by the Registry service.
 
@@ -69,7 +70,11 @@ def build_auth_headers(
     """
     timestamp = str(int(time.time()))
     message = f"{operation}:{resource_id}:{timestamp}"
-    signature = sign_eip191(private_key, message)
+    # WaaP/MPC sellers have no exportable key: when a `sign_fn` is supplied the
+    # message is signed by the pluggable signer (e.g. waap-cli) and the caller
+    # must pass `identity_identifier` (the known wallet address). Raw-key callers
+    # are unchanged.
+    signature = sign_fn(message) if sign_fn is not None else sign_eip191(private_key, message)
     identifier = identity_identifier or address_from_private_key(private_key)
     return {
         "Content-Type": "application/json",

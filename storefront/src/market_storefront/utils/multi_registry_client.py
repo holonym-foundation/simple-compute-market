@@ -235,7 +235,10 @@ class MultiRegistryClient:
     async def publish_listing_per_registry(
         self,
         payloads: dict[str, ListingRequest],
-        private_key: str,
+        private_key: str | None = None,
+        *,
+        address: str | None = None,
+        sign_fn=None,
     ) -> list[PublishResult]:
         """Publish a (possibly distinct) ``ListingRequest`` payload to each
         registry independently. Returns one :class:`PublishResult` per entry
@@ -249,7 +252,9 @@ class MultiRegistryClient:
         return await self._fanout_per_registry(
             "publish_listing",
             payloads,
-            lambda client, payload: client.publish_listing(payload, private_key),
+            lambda client, payload: client.publish_listing(
+                payload, private_key, address=address, sign_fn=sign_fn
+            ),
         )
 
     async def update_listing_per_registry(
