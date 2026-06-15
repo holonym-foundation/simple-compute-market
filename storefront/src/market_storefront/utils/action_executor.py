@@ -982,18 +982,43 @@ async def fulfill_compute_obligation(
         logger.info("[ALKAHEST] (Simulated) Fulfilled compute obligation without on-chain client.")
     else:
         try:
-            fulfillment_uid = await client.string_obligation.do_obligation(
-                connection_details,
-                escrow_uid
+            from service.signing import (
+                external_tx_submit_enabled,
+                submit_tx_via_command,
+                extract_attested_uid,
             )
-            logger.info("[ALKAHEST] Fulfilled compute obligation with on-chain client; machine provisioned.")
             demand_bytes = order_bytes
-            request_arbitration_result = await client.oracle.request_arbitration(
-                fulfillment_uid,
-                oracle_address,
-                demand_bytes,
-            )
-            logger.info(f"[ALKAHEST] Arbitration requested: {request_arbitration_result}")
+            if external_tx_submit_enabled():
+                # WaaP/MPC seller — no exportable key. Build the obligation calldata
+                # and broadcast via the external send-tx command (waap-cli), which
+                # signs under the MPC + lets blockaid simulate the tx. Recover the
+                # fulfillment UID from the receipt's EAS Attested event.
+                to, data = client.string_obligation.do_obligation_calldata(
+                    connection_details, ref_uid=escrow_uid
+                )
+                tx_hash = submit_tx_via_command(to, data)
+                fulfillment_uid = extract_attested_uid(tx_hash)
+                logger.info(
+                    "[ALKAHEST] Fulfilled compute obligation via WaaP send-tx "
+                    "(tx=%s uid=%s); machine provisioned.", tx_hash, fulfillment_uid,
+                )
+                arb_to, arb_data = client.oracle.request_arbitration_calldata(
+                    fulfillment_uid, oracle_address, demand_bytes
+                )
+                arb_tx = submit_tx_via_command(arb_to, arb_data)
+                logger.info("[ALKAHEST] Arbitration requested via WaaP send-tx (tx=%s)", arb_tx)
+            else:
+                fulfillment_uid = await client.string_obligation.do_obligation(
+                    connection_details,
+                    escrow_uid
+                )
+                logger.info("[ALKAHEST] Fulfilled compute obligation with on-chain client; machine provisioned.")
+                request_arbitration_result = await client.oracle.request_arbitration(
+                    fulfillment_uid,
+                    oracle_address,
+                    demand_bytes,
+                )
+                logger.info(f"[ALKAHEST] Arbitration requested: {request_arbitration_result}")
         except Exception as error:
             logger.error(
                 "[ALKAHEST] EVENT=settlement_failed_after_provisioning "

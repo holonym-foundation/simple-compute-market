@@ -149,3 +149,97 @@ def make_alkahest_client(
         program, args, address, rpc_url, address_config,
         typed_data_args=typed_data_args,
     )
+
+
+# ---------------------------------------------------------------------------
+# External tx submission (WaaP send-tx)
+# ---------------------------------------------------------------------------
+# A WaaP/MPC wallet can't drive alkahest's internal broadcast (the signer can't
+# produce a raw-tx digest, and waap-cli builds its own tx). So for on-chain
+# settlement we build the obligation calldata via alkahest's *_calldata methods
+# and broadcast it with an external command (``waap-cli send-tx``), which signs
+# under the WaaP MPC + lets blockaid simulate the tx (SOE-approved path,
+# holonym-foundation/internal-docs#1348). Off when the env var is unset →
+# alkahest's normal internal signing is used.
+
+_SENDTX_CMD_ENV = "ARKHAI_SIGNER_SENDTX_CMD"
+_SENDTX_RPC_ENV = "ARKHAI_SENDTX_RPC"
+
+
+def sendtx_command() -> Optional[tuple[str, list[str]]]:
+    """(program, args) for external tx submission; args carry ``{to}``/``{data}``.
+
+    Returns None when unset. The deploy bakes the chain + RPC into the command,
+    e.g. ``waap-cli send-tx --json --to {to} --data {data} --chain evm:84532
+    --rpc https://base-sepolia-rpc.publicnode.com``.
+    """
+    raw = (os.environ.get(_SENDTX_CMD_ENV, "") or "").strip()
+    if not raw:
+        return None
+    parts = shlex.split(raw)
+    return parts[0], parts[1:]
+
+
+def external_tx_submit_enabled() -> bool:
+    """True when on-chain settlement should broadcast via the send-tx command."""
+    return sendtx_command() is not None
+
+
+def submit_tx_via_command(to: str, data: str) -> str:
+    """Broadcast a tx via the external command; returns the 0x tx hash.
+
+    ``to``/``data`` are the calldata target + 0x-hex input from an alkahest
+    ``*_calldata`` method. The command must print JSON containing ``txHash``
+    (``waap-cli send-tx --json`` does).
+    """
+    cmd = sendtx_command()
+    if cmd is None:
+        raise RuntimeError(f"{_SENDTX_CMD_ENV} not set")
+    program, args = cmd
+    argv = [program] + [a.replace("{to}", to).replace("{data}", data) for a in args]
+    out = subprocess.run(argv, capture_output=True, text=True, timeout=300)
+    if out.returncode != 0:
+        raise RuntimeError(
+            f"send-tx command {program!r} failed (rc={out.returncode}): "
+            f"{out.stderr.strip()[:400]}"
+        )
+    import json
+    tx_hash = None
+    for line in out.stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict) and obj.get("txHash"):
+            tx_hash = obj["txHash"]
+    if not tx_hash:
+        raise RuntimeError(
+            f"send-tx command {program!r} printed no txHash: {out.stdout.strip()[:300]}"
+        )
+    return tx_hash
+
+
+# EAS Attested(address indexed recipient, address indexed attester, bytes32 uid,
+# bytes32 indexed schema) — uid is the sole non-indexed field, so it is the log
+# data (last 32 bytes). Used to recover the fulfillment UID from a do_obligation
+# tx broadcast externally.
+def extract_attested_uid(tx_hash: str, *, rpc_url: Optional[str] = None, timeout: int = 240) -> str:
+    """Recover the EAS attestation UID from an externally-broadcast tx receipt."""
+    rpc = (rpc_url or os.environ.get(_SENDTX_RPC_ENV, "") or "").strip()
+    if not rpc:
+        raise RuntimeError(f"{_SENDTX_RPC_ENV} not set (needed to read the receipt)")
+    if rpc.startswith("wss://"):
+        rpc = "https://" + rpc[len("wss://"):]
+    elif rpc.startswith("ws://"):
+        rpc = "http://" + rpc[len("ws://"):]
+
+    from web3 import Web3
+
+    w3 = Web3(Web3.HTTPProvider(rpc))
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
+    attested_topic = bytes(w3.keccak(text="Attested(address,address,bytes32,bytes32)"))
+    for log in receipt["logs"]:
+        topics = log["topics"]
+        if topics and bytes(topics[0]) == attested_topic:
+            return "0x" + bytes(log["data"])[-32:].hex()
+    raise RuntimeError(f"no EAS Attested event found in receipt for {tx_hash}")
