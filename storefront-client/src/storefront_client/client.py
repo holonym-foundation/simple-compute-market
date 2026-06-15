@@ -123,12 +123,13 @@ def _signed_request_headers(
 
 
 def _build_auth_headers(
-    private_key: str,
+    private_key: str | None,
     operation: str,
     resource_id: str,
     *,
     identity_scheme: str = "eip191",
     identity_identifier: str | None = None,
+    sign_fn=None,
 ) -> dict[str, str]:
     """Build signed-request headers for the storefront.
 
@@ -143,7 +144,10 @@ def _build_auth_headers(
     """
     timestamp = str(int(time.time()))
     message = f"{operation}:{resource_id}:{timestamp}"
-    signature = _sign_eip191(private_key, message)
+    # WaaP/MPC sellers have no exportable key: a ``sign_fn`` signs the message
+    # via the pluggable signer (waap-cli) and the caller passes the known
+    # ``identity_identifier`` (the wallet address). Raw-key callers are unchanged.
+    signature = sign_fn(message) if sign_fn is not None else _sign_eip191(private_key, message)
     identifier = identity_identifier or _address_from_private_key(private_key)
     return {
         "X-Timestamp": timestamp,
@@ -177,16 +181,29 @@ class _StorefrontClientBase:
         private_key: Optional[str],
         timeout: float,
         admin_key: Optional[str] = None,
+        *,
+        address: Optional[str] = None,
+        sign_fn=None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._private_key = private_key
         self._timeout = timeout
         self._admin_key = admin_key
+        # WaaP/MPC: sign signed-request headers via sign_fn (+ known address)
+        # instead of a raw key. See _auth_headers.
+        self._address = address
+        self._sign_fn = sign_fn
 
     def _url(self, path: str) -> str:
         return f"{self._base}{path}"
 
     def _auth_headers(self, operation: str, resource_id: str) -> dict[str, str]:
+        if self._sign_fn is not None:
+            return _build_auth_headers(
+                None, operation, resource_id,
+                identity_identifier=(self._address or "").lower() or None,
+                sign_fn=self._sign_fn,
+            )
         if not self._private_key:
             return {}
         return _build_auth_headers(self._private_key, operation, resource_id)
@@ -958,8 +975,10 @@ class SyncStorefrontClient(_StorefrontClientBase):
         timeout: float = 60.0,
         transport: httpx.BaseTransport | None = None,
         admin_key: Optional[str] = None,
+        address: Optional[str] = None,
+        sign_fn=None,
     ) -> None:
-        super().__init__(base_url, private_key, timeout, admin_key)
+        super().__init__(base_url, private_key, timeout, admin_key, address=address, sign_fn=sign_fn)
         self._client = httpx.Client(
             base_url=self._base,
             timeout=timeout,
