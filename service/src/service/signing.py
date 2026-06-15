@@ -72,6 +72,21 @@ def message_command() -> tuple[str, list[str]]:
     return parts[0], parts[1:]
 
 
+_DEFAULT_TYPED_DATA_CMD = "waap-cli sign-typed-data --data {typed_data}"
+
+
+def typed_data_command() -> tuple[str, list[str]]:
+    """(program, args) for EIP-712 typed-data signing; args carry the ``{typed_data}`` token.
+
+    Preferred over digest signing for escrow: the structured EIP-712 payload is
+    risk-assessable by the WaaP policy engine (and permission-token-scopable),
+    unlike an opaque 32-byte digest. See holonym-foundation/internal-docs#1348.
+    """
+    raw = os.environ.get("ARKHAI_SIGNER_TYPED_DATA_CMD", "") or _DEFAULT_TYPED_DATA_CMD
+    parts = shlex.split(raw)
+    return parts[0], parts[1:]
+
+
 def sign_message_eip191(message: str, credential: str) -> str:
     """EIP-191 sign a text message with whichever backend the credential names.
 
@@ -127,6 +142,10 @@ def make_alkahest_client(
 
     address = external_signer_address(credential)
     program, args = digest_command()
+    # Prefer the structured EIP-712 path (sign-typed-data) — alkahest forwards typed
+    # data instead of an opaque digest, so the WaaP policy engine can risk-assess it.
+    _, typed_data_args = typed_data_command()
     return AlkahestClient.with_command_signer(
         program, args, address, rpc_url, address_config,
+        typed_data_args=typed_data_args,
     )

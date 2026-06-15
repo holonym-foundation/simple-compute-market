@@ -22,6 +22,7 @@ from service.signing import (
     make_alkahest_client,
     message_command,
     sign_message_eip191,
+    typed_data_command,
 )
 
 
@@ -44,10 +45,13 @@ def test_external_signer_address_parses_and_rejects():
 def test_command_defaults_are_waap_cli(monkeypatch):
     monkeypatch.delenv("ARKHAI_SIGNER_DIGEST_CMD", raising=False)
     monkeypatch.delenv("ARKHAI_SIGNER_MESSAGE_CMD", raising=False)
+    monkeypatch.delenv("ARKHAI_SIGNER_TYPED_DATA_CMD", raising=False)
     prog, args = digest_command()
     assert prog == "waap-cli" and "{digest}" in " ".join(args)
     prog, args = message_command()
     assert prog == "waap-cli" and "{message}" in " ".join(args)
+    prog, args = typed_data_command()
+    assert prog == "waap-cli" and "{typed_data}" in " ".join(args)
 
 
 def test_sign_message_raw_key_matches_eth_account():
@@ -98,11 +102,14 @@ def _stub_alkahest_py(monkeypatch):
             calls["private_key"] = private_key
 
         @staticmethod
-        def with_command_signer(program, args, address, rpc_url, address_config):
+        def with_command_signer(
+            program, args, address, rpc_url, address_config, typed_data_args=None
+        ):
             calls["kind"] = "command"
             calls["program"] = program
             calls["args"] = args
             calls["address"] = address
+            calls["typed_data_args"] = typed_data_args
             return object()
 
     mod = types.ModuleType("alkahest_py")
@@ -125,3 +132,5 @@ def test_make_alkahest_client_dispatches_command_signer(monkeypatch):
     assert calls["program"] == "mock-signer"
     assert "{digest}" in " ".join(calls["args"])
     assert calls["address"] == ADDR
+    # Path B: the typed-data command is threaded so escrow signs via sign-typed-data.
+    assert "{typed_data}" in " ".join(calls["typed_data_args"])
