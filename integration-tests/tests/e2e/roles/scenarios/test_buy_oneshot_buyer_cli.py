@@ -30,6 +30,7 @@ B5  Seller + lease:   listing closes while capacity is held, primary escrow read
 from __future__ import annotations
 
 import logging
+import os
 from importlib import resources
 
 import pytest
@@ -65,46 +66,74 @@ OFFER_RESOURCE = {
     "sla": 90.0,
     "region": "California, US",
 }
-# MockERC20 at the deterministic alkahest address; buyer (account #1) is
-# pre-funded with it in the baked chain state. decimals=0 → raw == display.
-DEMAND_TOKEN_ADDRESS = "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0"
-DEMAND_AMOUNT = 10_000
+# ---------------------------------------------------------------------------
+# Chain parameterization. Defaults to ``anvil`` (the baked test chain); set
+# ``E2E_CHAIN=base_sepolia`` (or another SDK chain) to run the identical flow
+# against a live testnet. For anvil the alkahest addresses come from the baked
+# override JSON; for SDK chains they come from
+# ``DefaultExtensionConfig.for_chain(<chain>)`` (``resolve_alkahest_address_config``
+# returns None for those — the SDK supplies built-in addresses). Prices/token
+# are overridable via env so CI can pin a funded testnet token.
+# ---------------------------------------------------------------------------
+E2E_CHAIN = (os.environ.get("E2E_CHAIN") or "anvil").strip()
 
-_ALKAHEST_ADDRESSES_PATH = str(
-    resources.files("market_storefront.data").joinpath("alkahest_anvil_addresses.json")
-)
-_ALKAHEST_CFG = resolve_alkahest_address_config(
-    get_alkahest_network("anvil"), config_path=_ALKAHEST_ADDRESSES_PATH,
-)
+if E2E_CHAIN == "anvil":
+    # MockERC20 at the deterministic alkahest address; buyer (account #1) is
+    # pre-funded with it in the baked chain state. decimals=0 → raw == display.
+    DEMAND_TOKEN_ADDRESS = "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0"
+    TOKEN_DECIMALS = 0
+    _ADDR_PATH = str(
+        resources.files("market_storefront.data").joinpath("alkahest_anvil_addresses.json")
+    )
+    _CFG = resolve_alkahest_address_config(
+        get_alkahest_network("anvil"), config_path=_ADDR_PATH,
+    )
+    _ESCROW_ADDRESS = str(_CFG.erc20_addresses.escrow_obligation_nontierable).lower()
+    _RECIPIENT_ARBITER = get_recipient_arbiter("anvil", config_path=_ADDR_PATH).lower()
+    BUYER_INITIAL_PRICE = 7_000   # below the 10_000 seller floor — forces a round-0 counter
+    BUYER_MAX_PRICE = 12_000      # above floor — buyer accepts the seller's first counter
+    SELLER_RATE = "10000"
+else:
+    # SDK chain (e.g. base_sepolia): addresses from for_chain; token + prices
+    # from env (CI pins a funded testnet token). Prices are whole-token units
+    # scaled by TOKEN_DECIMALS; kept tiny so a small faucet balance suffices.
+    import alkahest_py as _akp
+
+    DEMAND_TOKEN_ADDRESS = os.environ.get(
+        "E2E_TOKEN_ADDRESS", "0x036CbD53842c5426634e7929541eC2318f3dCF7e",  # Base Sepolia USDC
+    )
+    TOKEN_DECIMALS = int(os.environ.get("E2E_TOKEN_DECIMALS", "6"))
+    _CFG = _akp.DefaultExtensionConfig.for_chain(E2E_CHAIN)
+    _ESCROW_ADDRESS = str(_CFG.erc20_addresses.escrow_obligation_nontierable).lower()
+    _RECIPIENT_ARBITER = str(_CFG.arbiters_addresses.recipient_arbiter).lower()
+    BUYER_INITIAL_PRICE = float(os.environ.get("E2E_INITIAL_PRICE", "0.007"))
+    BUYER_MAX_PRICE = float(os.environ.get("E2E_MAX_PRICE", "0.5"))
+    SELLER_RATE = os.environ.get("E2E_SELLER_RATE", "10000")
+
+DEMAND_AMOUNT = int(SELLER_RATE)
 ACCEPTED_ESCROWS = [{
-    "chain_name": "anvil",
-    "escrow_address": str(
-        _ALKAHEST_CFG.erc20_addresses.escrow_obligation_nontierable
-    ).lower(),
+    "chain_name": E2E_CHAIN,
+    "escrow_address": _ESCROW_ADDRESS,
     "literal_fields": {"token": DEMAND_TOKEN_ADDRESS},
-    "rates": [{"field": "amount", "per": "hour", "value": str(DEMAND_AMOUNT)}],
+    "rates": [{"field": "amount", "per": "hour", "value": SELLER_RATE}],
 }]
 
 
 def _recipient_demands(seller_wallet: str) -> list[dict]:
     return [{
-        "chain_name": "anvil",
-        "arbiter": get_recipient_arbiter(
-            "anvil", config_path=_ALKAHEST_ADDRESSES_PATH,
-        ).lower(),
+        "chain_name": E2E_CHAIN,
+        "arbiter": _RECIPIENT_ARBITER,
         "demand_data": {"recipient": seller_wallet.lower()},
     }]
 
 
 DURATION_HOURS = 1
-BUYER_INITIAL_PRICE = 7_000     # below the seller floor (10_000) — forces a round-0 counter
-BUYER_MAX_PRICE = 12_000        # above floor — buyer accepts the seller's first counter
 BUY_RULE_ID = "e2e-buy-create"  # non-pausing mock rule: create job returns immediately
 
 BUY_RESOURCE_CSV = (
     "resource_id,resource_type,resource_subtype,unit,value,state,min_price,token,"
     "max_duration_seconds,attribute.gpu_model,attribute.sla,attribute.region,attribute.vm_host\n"
-    f"{BUY_RESOURCE_ID},compute.gpu,rtx4090,count,1,available,10000,{DEMAND_TOKEN_ADDRESS},,"
+    f"{BUY_RESOURCE_ID},compute.gpu,rtx4090,count,1,available,{SELLER_RATE},{DEMAND_TOKEN_ADDRESS},,"
     f"{BUY_GPU_MODEL},90.0,\"California, US\",kvm1\n"
 )
 
@@ -138,8 +167,8 @@ class TestStageB0_Readiness:
 
         status = storefront_admin_client.get_system_status()
         alkahest_check = (status.checks or {}).get("alkahest", "absent")
-        assert "anvil" in alkahest_check, (
-            f"Storefront alkahest client not configured for anvil: {alkahest_check!r}"
+        assert E2E_CHAIN in alkahest_check, (
+            f"Storefront alkahest client not configured for {E2E_CHAIN}: {alkahest_check!r}"
         )
         deal_state._alkahest_configured = True
         log.info("[B0] Ready: storefront=ok provisioning_mode=mock alkahest=%s", alkahest_check)
@@ -276,9 +305,9 @@ class TestStageB4_MarketBuy:
                 "--initial-price", str(BUYER_INITIAL_PRICE),
                 "--max-price", str(BUYER_MAX_PRICE),
                 "--token-contract", DEMAND_TOKEN_ADDRESS,
-                "--token-decimals", "0",
+                "--token-decimals", str(TOKEN_DECIMALS),
                 "--duration-hours", str(DURATION_HOURS),
-                "--chain", "anvil",
+                "--chain", E2E_CHAIN,
                 "--max-matches", "5",
                 "--max-rounds", "10",
                 "--poll-interval", "1.0",

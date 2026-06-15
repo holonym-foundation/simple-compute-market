@@ -379,8 +379,11 @@ def buyer_cli(buyer_cli_binary: Path, tmp_path_factory) -> BuyerCli:
 
     registry_url = str(settings.REGISTRY.API_URL or "http://localhost:8080")
 
+    e2e_chain = (os.environ.get("E2E_CHAIN") or "anvil").strip()
+    # Anvil needs the baked address-override JSON; SDK chains (base_sepolia…)
+    # resolve alkahest addresses from DefaultExtensionConfig.for_chain at runtime.
     alkahest_path = _alkahest_addresses_path()
-    if not alkahest_path:
+    if e2e_chain == "anvil" and not alkahest_path:
         pytest.skip(
             "Could not locate alkahest_anvil_addresses.json via "
             "market_storefront.data — is market-storefront installed?"
@@ -398,9 +401,12 @@ def buyer_cli(buyer_cli_binary: Path, tmp_path_factory) -> BuyerCli:
             f"private_key    = {_toml_quote(private_key)}",
             f"ssh_public_key = {_toml_quote(ssh_public_key)}",
             "",
-            "[chains.anvil]",
+            f"[chains.{e2e_chain}]",
             f"rpc_url                      = {_toml_quote(rpc_url)}",
-            f"alkahest_address_config_path = {_toml_quote(alkahest_path)}",
+            *(
+                [f"alkahest_address_config_path = {_toml_quote(alkahest_path)}"]
+                if e2e_chain == "anvil" else []
+            ),
             "",
             "[registry]",
             f"urls = [{_toml_quote(registry_url)}]",
