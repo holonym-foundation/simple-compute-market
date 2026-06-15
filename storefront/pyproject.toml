@@ -80,6 +80,16 @@ market-policy = { path = "../policy", editable = true }
 torch = [
     { index = "pytorch-cpu" },
 ]
+# alkahest-py: the external-send-tx settlement path (WaaP seller) needs the
+# command-signer + calldata-export methods that stock PyPI 0.4.0 lacks
+# (AlkahestClient.with_command_signer, string_obligation.do_obligation_calldata,
+# oracle.request_arbitration_calldata). On the production/CI build target
+# (linux x86_64, py3.12) resolve to the patched wheel published at
+# holonym-foundation/alkahest-py v0.4.0-aex.1; other platforms fall back to the
+# PyPI registry (dev machines don't exercise the send-tx path).
+alkahest-py = [
+    { url = "https://github.com/holonym-foundation/alkahest-py/releases/download/v0.4.0-aex.1/alkahest_py-0.4.0-cp312-cp312-manylinux_2_34_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64' and python_full_version >= '3.12' and python_full_version < '3.13'" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
