@@ -1,0 +1,15 @@
+---
+# container-management — list AEX-managed tenant containers on this host.
+
+- name: List AEX-managed containers
+  community.docker.docker_host_info:
+    containers: true
+    containers_filters:
+      label: "aex.managed=true"
+  register: container_list_result
+
+- name: Assemble container list result
+  ansible.builtin.set_fact:
+    container_list_data:
+      count: "{{ container_list_result.containers | default([]) | length }}"
+      containers: "{{ container_list_result.containers | default([]) | map(attribute='Names') | list }}"

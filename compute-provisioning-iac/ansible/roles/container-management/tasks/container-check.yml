@@ -1,0 +1,13 @@
+---
+# container-management — host health/connectivity check (capacity probe).
+
+- name: Check docker host reachable
+  community.docker.docker_host_info:
+  register: container_check_host
+
+- name: Assemble container check result
+  ansible.builtin.set_fact:
+    check_data:
+      host: "{{ target_host | default('localhost') }}"
+      docker_reachable: "{{ container_check_host.host_info is defined }}"
+      containers_running: "{{ container_check_host.host_info.ContainersRunning | default(0) }}"

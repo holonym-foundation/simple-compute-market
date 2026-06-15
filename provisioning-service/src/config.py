@@ -137,6 +137,16 @@ class Settings:
         return Path(str(self._source.playbook_path)).resolve()
 
     @property
+    def resolved_container_playbook_path(self) -> Path:
+        """Playbook for container provisioning. Falls back to the
+        container-operations.yaml sibling of the VM-operations playbook when
+        ``container_playbook_path`` is not set in config."""
+        explicit = getattr(self._source, "container_playbook_path", None)
+        if explicit:
+            return Path(str(explicit)).resolve()
+        return (self.resolved_playbook_path.parent / "container-operations.yaml").resolve()
+
+    @property
     def resolved_inventory_path(self) -> Path:
         return Path(str(self._source.inventory_path)).resolve()
 

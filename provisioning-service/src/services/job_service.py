@@ -363,8 +363,13 @@ class AnsibleJobService:
                 else self._settings.resolved_inventory_path
             )
 
+            playbook_path = (
+                self._settings.resolved_container_playbook_path
+                if getattr(params, "provisioning_type", "vm") == "container"
+                else self._settings.resolved_playbook_path
+            )
             run = self._ansible.start_playbook(
-                playbook_path=self._settings.resolved_playbook_path,
+                playbook_path=playbook_path,
                 inventory_path=inventory_path,
                 extra_vars_path=vars_path,
                 limit=params.vm_host,
@@ -582,6 +587,10 @@ class AnsibleJobService:
             gcs_image_path=params.get("gcs_image_path"),
             vm_expiry_at=params.get("vm_expiry_at"),
             max_retries=params.get("max_retries"),
+            provisioning_type=params.get("provisioning_type", "vm"),
+            container_image=params.get("container_image"),
+            container_env=params.get("container_env"),
+            lease_id=params.get("lease_id"),
         )
 
     def _redact_logs(self, logs: str) -> str:
@@ -647,6 +656,12 @@ class AnsibleJobService:
         payload["status"] = ar.get("status")
         payload["action"] = ar.get("action")
         payload["vm_name"] = ar.get("vm_name")
+        # Container tenants surface their identity at the top level too (parallel to vm_name).
+        if ar.get("container_name"):
+            payload["container_name"] = ar.get("container_name")
+            payload["container_id"] = ar.get("container_id")
+            payload["running"] = ar.get("running")
+            payload["home_volume"] = ar.get("home_volume")
         payload["host"] = ar.get("host")
         payload["timestamp"] = ar.get("timestamp")
 

@@ -61,7 +61,30 @@ def resolve_buyer_wallet(
     disagree, a warning is emitted but the configured address is kept
     (lets a user delegate signing for an alternate address while
     surfacing the mismatch loudly).
+
+    External signer: when ``[wallet] signer = "waap"`` (or env
+    ``AGENT_SIGNER=waap``) is set, the returned credential is the sentinel
+    ``"waap:<address>"`` instead of a raw key — the signing surfaces
+    dispatch on it (see ``service.signing``). ``wallet.address`` is
+    required in that mode (no key to derive from); ``wallet.private_key``
+    is ignored.
     """
+    signer_kind = (
+        os.environ.get("AGENT_SIGNER", "").strip()
+        or resolve_config_value(toml_path="wallet.signer")
+    ).lower()
+    if signer_kind == "waap":
+        addr = resolve_config_value(override=override_addr, toml_path="wallet.address")
+        if not addr:
+            typer.secho(
+                "wallet.signer = \"waap\" requires wallet.address (no raw key "
+                "to derive it from). Set wallet.address in the config.",
+                err=True, fg=typer.colors.RED,
+            )
+            raise typer.Exit(2)
+        from service.signing import WAAP_PREFIX
+        return addr, f"{WAAP_PREFIX}{addr}"
+
     addr = resolve_config_value(override=override_addr, toml_path="wallet.address")
     pk = resolve_config_value(override=override_pk, toml_path="wallet.private_key")
     if pk:

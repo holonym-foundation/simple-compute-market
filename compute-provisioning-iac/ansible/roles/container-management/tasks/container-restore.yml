@@ -1,0 +1,62 @@
+---
+# container-management — restore an archived tenant from cold storage.
+# Pulls the archive from object storage, recreates the home volume, and unpacks
+# it. The caller then runs `create` to start a fresh container bound to the
+# restored volume on whichever provider won the bid.
+
+- name: Ensure archive workdir exists
+  ansible.builtin.file:
+    path: "{{ archive_workdir }}"
+    state: directory
+    mode: "0700"
+
+- name: Resolve archive object name
+  ansible.builtin.set_fact:
+    _archive_suffix: "{{ '.age' if ((archive_age_recipient | default('')) | length > 0) else '' }}"
+
+- name: Download archive from object storage
+  amazon.aws.s3_object:
+    endpoint_url: "{{ archive_s3_endpoint }}"
+    bucket: "{{ archive_s3_bucket }}"
+    object: "{{ archive_prefix }}/{{ container_name }}.tar.gz{{ _archive_suffix }}"
+    dest: "{{ archive_workdir }}/{{ container_name }}.tar.gz{{ _archive_suffix }}"
+    mode: get
+
+- name: Decrypt archive (if encrypted)
+  ansible.builtin.command: >-
+    age -d -i {{ archive_age_identity }}
+    -o {{ archive_workdir }}/{{ container_name }}.tar.gz
+    {{ archive_workdir }}/{{ container_name }}.tar.gz.age
+  when: (archive_age_recipient | default('')) | length > 0
+  changed_when: true
+
+- name: Recreate the home volume
+  community.docker.docker_volume:
+    name: "{{ container_name }}-home"
+    state: present
+    labels:
+      aex.tenant: "{{ container_name }}"
+      aex.restored: "true"
+
+- name: Unpack archive into the home volume
+  ansible.builtin.command: >-
+    docker run --rm
+    -v {{ container_name }}-home:/data
+    -v {{ archive_workdir }}:/backup
+    alpine sh -c "tar xzf /backup/{{ container_name }}.tar.gz -C /data"
+  changed_when: true
+
+- name: Clean up local archive files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ archive_workdir }}/{{ container_name }}.tar.gz"
+    - "{{ archive_workdir }}/{{ container_name }}.tar.gz.age"
+
+- name: Assemble container restore result
+  ansible.builtin.set_fact:
+    container_restore_data:
+      container_name: "{{ container_name }}"
+      restored: true
+      home_volume: "{{ container_name }}-home"

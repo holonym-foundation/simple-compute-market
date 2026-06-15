@@ -30,6 +30,7 @@ from controllers.system_controller import SystemController   # noqa: E402
 from controllers.jobs_controller import AnsibleJobsController  # noqa: E402
 from controllers.hosts_controller import HostController      # noqa: E402
 from controllers.vms_controller import VmController          # noqa: E402
+from controllers.containers_controller import ContainerController  # noqa: E402
 from controllers.leases_controller import LeasesController   # noqa: E402
 
 
@@ -253,6 +254,7 @@ app.include_router(SystemController.make_system_router(), prefix="/api/v1")     
 app.include_router(AnsibleJobsController.make_router(), prefix="/api/v1")          # /api/v1/jobs/*
 app.include_router(HostController.make_router(), prefix="/api/v1")                 # /api/v1/hosts/*
 app.include_router(VmController.make_router(), prefix="/api/v1")                   # /api/v1/hosts/{host}/vms/*
+app.include_router(ContainerController.make_router(), prefix="/api/v1")            # /api/v1/hosts/{host}/containers/*
 app.include_router(LeasesController.make_router(), prefix="/api/v1")               # /api/v1/leases/*
 
 # Test controller — only mounted when mock profile is active.

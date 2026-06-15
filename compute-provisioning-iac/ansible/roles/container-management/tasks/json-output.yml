@@ -1,0 +1,58 @@
+---
+# container-management — JSON output for the provisioning service to parse.
+#
+# The provisioning service's parser (ansible_service._extract_ansible_json) keys
+# off an action-tagged JSON object emitted in a `msg: |` block (it requires an
+# "action" field) — NOT the YAML that `debug: var=` renders under the default/yaml
+# callback. So for each action we emit `{action: <x>} | combine(<x>_data)` via
+# to_nice_json. (Mirrors roles/vm-management/json-output.yml's msg-string output.)
+
+- name: Output container creation result
+  ansible.builtin.debug:
+    msg: "{{ {'action': 'create'} | combine(container_creation_data) | to_nice_json }}"
+  when: container_action == "create" and container_creation_data is defined
+
+- name: Output container start result
+  ansible.builtin.debug:
+    msg: "{{ {'action': 'start'} | combine(container_start_data) | to_nice_json }}"
+  when: container_action == "start" and container_start_data is defined
+
+- name: Output container stop result
+  ansible.builtin.debug:
+    msg: "{{ {'action': 'stop'} | combine(container_stop_data) | to_nice_json }}"
+  when: container_action == "stop" and container_stop_data is defined
+
+- name: Output container destroy result
+  ansible.builtin.debug:
+    msg: "{{ {'action': 'destroy'} | combine(container_destroy_data) | to_nice_json }}"
+  when: container_action == "destroy" and container_destroy_data is defined
+
+- name: Output container monitor result
+  ansible.builtin.debug:
+    msg: "{{ {'action': 'monitor'} | combine(container_monitoring_data) | to_nice_json }}"
+  when: container_action == "monitor" and container_monitoring_data is defined
+
+- name: Output container lease_end result
+  ansible.builtin.debug:
+    msg: "{{ {'action': 'lease_end'} | combine(container_lease_end_data) | to_nice_json }}"
+  when: container_action == "lease_end" and container_lease_end_data is defined
+
+- name: Output container list result
+  ansible.builtin.debug:
+    msg: "{{ {'action': 'list'} | combine(container_list_data) | to_nice_json }}"
+  when: container_action == "list" and container_list_data is defined
+
+- name: Output container check result
+  ansible.builtin.debug:
+    msg: "{{ {'action': 'check'} | combine(check_data) | to_nice_json }}"
+  when: container_action == "check" and check_data is defined
+
+- name: Output container archive result
+  ansible.builtin.debug:
+    msg: "{{ {'action': 'archive'} | combine(container_archive_data) | to_nice_json }}"
+  when: container_action == "archive" and container_archive_data is defined
+
+- name: Output container restore result
+  ansible.builtin.debug:
+    msg: "{{ {'action': 'restore'} | combine(container_restore_data) | to_nice_json }}"
+  when: container_action == "restore" and container_restore_data is defined

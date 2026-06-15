@@ -1,0 +1,24 @@
+---
+# container-management — full teardown: remove the container AND (by default)
+# its home volume, so the WaaP credential is gone. Set container_remove_volume=false
+# to keep the volume.
+
+- name: Remove container
+  community.docker.docker_container:
+    name: "{{ container_name }}"
+    state: absent
+    force_kill: true
+  register: container_destroy_result
+
+- name: Remove per-tenant home volume
+  community.docker.docker_volume:
+    name: "{{ container_name }}-home"
+    state: absent
+  when: container_remove_volume | default(true) | bool
+
+- name: Assemble container destroy result
+  ansible.builtin.set_fact:
+    container_destroy_data:
+      container_name: "{{ container_name }}"
+      removed: true
+      volume_removed: "{{ container_remove_volume | default(true) | bool }}"

@@ -1,0 +1,29 @@
+---
+# container-management prerequisites — validation + setup before any action.
+
+- name: Ensure container runtime (docker) is reachable
+  community.docker.docker_host_info:
+  register: container_host_info
+
+- name: Apply default container settings (create)
+  ansible.builtin.set_fact:
+    container_image_ref: "{{ container_image | default(container_default_image) }}"
+    container_memory: "{{ container_memory | default(container_default_memory) }}"
+    container_cpus: "{{ container_cpus | default(container_default_cpus) }}"
+    container_pids_limit: "{{ container_pids_limit | default(container_default_pids_limit) }}"
+  when: container_action == "create"
+
+- name: Check if container already exists (create)
+  community.docker.docker_container_info:
+    name: "{{ container_name }}"
+  register: container_exists_check
+  when: container_action == "create"
+
+- name: Fail if container already exists (create)
+  ansible.builtin.fail:
+    msg: >-
+      Container '{{ container_name }}' already exists on host '{{ target_host }}'.
+      Use a different name or destroy the existing container first.
+  when:
+    - container_action == "create"
+    - container_exists_check.exists | default(false)

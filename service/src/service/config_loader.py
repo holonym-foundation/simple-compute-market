@@ -12,6 +12,9 @@ Schema (storefront and buyer share wallet/chains/registry tables):
     [wallet]
     address = "0x..."
     private_key = "0x..."            # one key signs for every configured chain
+    # signer = "waap"                # external signer: sign via waap-cli instead of a raw
+    #                                # key (address required; private_key ignored). Command
+    #                                # backends are env-overridable — see service.signing.
     ssh_public_key = "ssh-ed25519 ..." # used as the pubkey delivered at settle
 
     # One [chains.<name>] table per chain the operator wants to transact
