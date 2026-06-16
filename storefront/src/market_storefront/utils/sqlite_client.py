@@ -1393,10 +1393,11 @@ class SQLiteClient:
                         now_iso,
                     ),
                 )
-                if resource_type == "compute.gpu":
+                if resource_type in ("compute.gpu", "compute.container"):
                     self._sync_compute_pool_for_resource(
                         cur,
                         resource_id=resource_id,
+                        resource_type=resource_type,
                         resource_subtype=resource_subtype,
                         value=value,
                         state=state,
@@ -2100,6 +2101,7 @@ class SQLiteClient:
         cur: sqlite3.Cursor,
         *,
         resource_id: str,
+        resource_type: str = "compute.gpu",
         resource_subtype: str | None,
         value: Any,
         state: str | None,
@@ -2166,8 +2168,9 @@ class SQLiteClient:
               status, allocation_policy, min_price, token, max_duration_seconds,
               accepted_escrows, created_at, updated_at
             )
-            VALUES (?, 'compute.gpu', ?, ?, ?, ?, ?, 'first_fit', ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'first_fit', ?, ?, ?, ?, ?, ?)
             ON CONFLICT(pool_id) DO UPDATE SET
+              resource_type=excluded.resource_type,
               gpu_model=COALESCE(excluded.gpu_model, compute_inventory_pools.gpu_model),
               region=COALESCE(excluded.region, compute_inventory_pools.region),
               sla=COALESCE(excluded.sla, compute_inventory_pools.sla),
@@ -2181,6 +2184,7 @@ class SQLiteClient:
             """,
             (
                 pool_id,
+                resource_type,
                 attrs.get("gpu_model") or resource_subtype,
                 attrs.get("region"),
                 attrs.get("sla"),
@@ -2274,11 +2278,11 @@ class SQLiteClient:
         cur.execute(
             """
             SELECT m.pool_id, m.member_id, r.resource_id, r.resource_subtype,
-                   r.unit, r.state, r.value, r.attributes, m.gpu_count
+                   r.unit, r.state, r.value, r.attributes, m.gpu_count, p.resource_type
             FROM compute_pool_members m
             JOIN resources r ON r.resource_id = m.resource_id
             JOIN compute_inventory_pools p ON p.pool_id = m.pool_id
-            WHERE p.resource_type = 'compute.gpu'
+            WHERE p.resource_type IN ('compute.gpu', 'compute.container')
               AND p.status = 'active'
               AND m.status = 'active'
               AND (r.state IS NULL OR r.state != 'deleted')
@@ -2482,6 +2486,7 @@ class SQLiteClient:
                     value,
                     attributes_raw,
                     member_gpu_count,
+                    pool_resource_type,
                 ) in rows:
                     attrs = self._compute_attrs_from_raw(attributes_raw)
                     if not self._compute_resource_matches(
@@ -2500,13 +2505,22 @@ class SQLiteClient:
                     if not isinstance(vm_host, str) or not vm_host.strip():
                         continue
 
+                    # Container slices reserve ONE slot per lease (the demand's
+                    # gpu_count is 0); GPU slices reserve the requested gpu_count.
+                    # Capacity (value / member count) is slot-count for containers
+                    # and GPU-count for GPUs, so this keeps per-resource accounting
+                    # correct for both — a container resource with value=N admits N
+                    # concurrent leases.
+                    effective_requested = (
+                        1 if pool_resource_type == "compute.container" else requested_gpu_count
+                    )
                     total_gpu_count = int(
                         member_gpu_count
                         if member_gpu_count is not None
                         else self._resource_total_gpu_count(value=value, attrs=attrs)
                     )
                     held_gpu_count = self._held_gpu_count(cur, resource_id)
-                    if total_gpu_count - held_gpu_count < requested_gpu_count:
+                    if total_gpu_count - held_gpu_count < effective_requested:
                         continue
 
                     now_iso = datetime.now().isoformat()
@@ -2526,7 +2540,7 @@ class SQLiteClient:
                             resource_id,
                             listing_id,
                             escrow_uid,
-                            requested_gpu_count,
+                            effective_requested,
                             now_iso,
                             now_iso,
                         ),
@@ -2551,7 +2565,7 @@ class SQLiteClient:
                             aggregate_state,
                             json.dumps({
                                 "allocation_id": allocation_id,
-                                "gpu_count": requested_gpu_count,
+                                "gpu_count": effective_requested,
                                 "listing_id": listing_id,
                                 "escrow_uid": escrow_uid,
                             }),
@@ -2570,8 +2584,8 @@ class SQLiteClient:
                         "unit": unit,
                         "state": aggregate_state,
                         "value": value,
-                        "allocated_gpu_count": requested_gpu_count,
-                        "available_gpu_count": total_gpu_count - held_gpu_count - requested_gpu_count,
+                        "allocated_gpu_count": effective_requested,
+                        "available_gpu_count": total_gpu_count - held_gpu_count - effective_requested,
                         "attributes": attrs,
                     }
 
@@ -2617,6 +2631,7 @@ class SQLiteClient:
                     value,
                     attributes_raw,
                     member_gpu_count,
+                    pool_resource_type,
                 ) in rows:
                     attrs = self._compute_attrs_from_raw(attributes_raw)
                     if not self._compute_resource_matches(
@@ -2635,6 +2650,9 @@ class SQLiteClient:
                     if not isinstance(vm_host, str) or not vm_host.strip():
                         continue
 
+                    effective_requested = (
+                        1 if pool_resource_type == "compute.container" else requested_gpu_count
+                    )
                     total_gpu_count = int(
                         member_gpu_count
                         if member_gpu_count is not None
@@ -2642,7 +2660,7 @@ class SQLiteClient:
                     )
                     held_gpu_count = self._held_gpu_count(cur, resource_id)
                     available_gpu_count = total_gpu_count - held_gpu_count
-                    if available_gpu_count < requested_gpu_count:
+                    if available_gpu_count < effective_requested:
                         continue
 
                     return {
