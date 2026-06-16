@@ -113,6 +113,13 @@ def _migrate_hosts_public_host(engine: Engine) -> None:
     _add_column_if_missing(engine, "hosts", "public_host", "VARCHAR")
 
 
+def _migrate_hosts_host_type(engine: Engine) -> None:
+    # Existing rows predate container support → they are KVM hosts.
+    _add_column_if_missing(
+        engine, "hosts", "host_type", "VARCHAR NOT NULL DEFAULT 'kvm'"
+    )
+
+
 def _migrate_vm_leases_table(engine: Engine) -> None:
     Base.metadata.tables["vm_leases"].create(bind=engine, checkfirst=True)
 
@@ -133,4 +140,5 @@ _MIGRATIONS: tuple[Migration, ...] = (
     Migration("20260603_002_hosts_public_host", _migrate_hosts_public_host),
     Migration("20260603_003_vm_leases_table", _migrate_vm_leases_table),
     Migration("20260603_004_vm_leases_allocation_id", _migrate_vm_leases_allocation_id),
+    Migration("20260616_005_hosts_host_type", _migrate_hosts_host_type),
 )

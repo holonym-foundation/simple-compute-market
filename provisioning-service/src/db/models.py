@@ -114,6 +114,10 @@ class Host(Base):
     ssh_user = Column(String, nullable=False)  # SSH login user on the KVM host
     ssh_key_type = Column(String, nullable=False, default="path")  # "path" | "embedded"
     ssh_key_value = Column(String, nullable=False)  # path string or encrypted PEM
+    # "kvm" (KVM/libvirt VM host) | "container" (Docker container host). Drives which
+    # Ansible inventory group the host renders into ([kvm_hosts] vs [container_hosts])
+    # and therefore which playbook (vm-operations vs container-operations) can target it.
+    host_type = Column(String, nullable=False, default="kvm", server_default="kvm")
     gpu_count = Column(Integer, nullable=False, default=0)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
