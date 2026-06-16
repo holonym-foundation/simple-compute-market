@@ -288,37 +288,49 @@ class AnsibleService:
         nonce = uuid.uuid4().hex
         inv_path = _Path(tempfile.gettempdir()) / f"inventory_{nonce}.ini"
 
-        lines = ["[kvm_hosts]"]
+        # Group hosts into [kvm_hosts] / [container_hosts] by host_type so the
+        # container-operations playbook (hosts: container_hosts) can target a
+        # registered container host (e.g. aex-native-scm). Both headers are
+        # always emitted. Mirrors HostService.render_inventory_ini — this is the
+        # renderer the job pipeline actually uses (write_inventory), so the two
+        # must agree.
         companion_key_paths: list[_Path] = []
-
+        groups: dict[str, list] = {"kvm_hosts": [], "container_hosts": []}
         for host in hosts:
-            if host.ssh_key_type == "path":
-                key_ref = host.ssh_key_value
-            else:
-                # Decrypt and write a companion temp key file
-                from crypto import decrypt_key
-                secret = getattr(self._settings, "ssh_decryption_key", "")
-                plaintext = decrypt_key(host.ssh_key_value, secret)
-                key_file = _Path(tempfile.gettempdir()) / f"{host.name}_key_{nonce}"
-                key_file.write_text(plaintext, encoding="utf-8")
-                key_file.chmod(0o400)
-                companion_key_paths.append(key_file)
-                key_ref = str(key_file)
+            host_type = getattr(host, "host_type", None) or "kvm"
+            groups["container_hosts" if host_type == "container" else "kvm_hosts"].append(host)
 
-            # public_host is the tenant-facing address; emit it as a host var
-            # so the playbook can use it for the connection strings it returns.
-            public_seg = (
-                f"  public_host={host.public_host}"
-                if getattr(host, "public_host", None)
-                else ""
-            )
-            lines.append(
-                f"{host.name}"
-                f"  ansible_host={host.kvm_host}"
-                f"{public_seg}"
-                f"  ansible_user={host.ssh_user}"
-                f"  ansible_ssh_private_key_file={key_ref}"
-            )
+        lines: list[str] = []
+        for group_name in ("kvm_hosts", "container_hosts"):
+            lines.append(f"[{group_name}]")
+            for host in groups[group_name]:
+                if host.ssh_key_type == "path":
+                    key_ref = host.ssh_key_value
+                else:
+                    # Decrypt and write a companion temp key file
+                    from crypto import decrypt_key
+                    secret = getattr(self._settings, "ssh_decryption_key", "")
+                    plaintext = decrypt_key(host.ssh_key_value, secret)
+                    key_file = _Path(tempfile.gettempdir()) / f"{host.name}_key_{nonce}"
+                    key_file.write_text(plaintext, encoding="utf-8")
+                    key_file.chmod(0o400)
+                    companion_key_paths.append(key_file)
+                    key_ref = str(key_file)
+
+                # public_host is the tenant-facing address; emit it as a host var
+                # so the playbook can use it for the connection strings it returns.
+                public_seg = (
+                    f"  public_host={host.public_host}"
+                    if getattr(host, "public_host", None)
+                    else ""
+                )
+                lines.append(
+                    f"{host.name}"
+                    f"  ansible_host={host.kvm_host}"
+                    f"{public_seg}"
+                    f"  ansible_user={host.ssh_user}"
+                    f"  ansible_ssh_private_key_file={key_ref}"
+                )
 
         inv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         logger.debug(

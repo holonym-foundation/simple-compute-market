@@ -402,13 +402,41 @@ class TestExtractAnsibleJson:
 
 
 class _FakeHost:
-    def __init__(self, name, kvm_host, public_host=None):
+    def __init__(self, name, kvm_host, public_host=None, host_type="kvm"):
         self.name = name
         self.kvm_host = kvm_host
         self.public_host = public_host
+        self.host_type = host_type
         self.ssh_user = "ubuntu"
         self.ssh_key_type = "path"
         self.ssh_key_value = "/home/appuser/.ssh/id_ed25519"
+
+
+class TestInventoryHostGrouping:
+    def test_emits_both_group_headers(self):
+        svc = _make_service()
+        inv_path = svc.write_inventory([])
+        try:
+            content = inv_path.read_text(encoding="utf-8")
+        finally:
+            inv_path.unlink(missing_ok=True)
+        assert "[kvm_hosts]" in content
+        assert "[container_hosts]" in content
+
+    def test_container_host_under_container_group(self):
+        svc = _make_service()
+        inv_path = svc.write_inventory([
+            _FakeHost("aex-native-scm", "167.233.97.235", host_type="container"),
+            _FakeHost("kvm1", "10.0.0.5", host_type="kvm"),
+        ])
+        try:
+            content = inv_path.read_text(encoding="utf-8")
+        finally:
+            inv_path.unlink(missing_ok=True)
+        kvm_block, container_block = content.split("[container_hosts]")
+        # The container host lands only in [container_hosts]; kvm host only in [kvm_hosts].
+        assert "aex-native-scm" in container_block and "aex-native-scm" not in kvm_block
+        assert "kvm1" in kvm_block and "kvm1" not in container_block
 
 
 class TestPublicHostInventory:
