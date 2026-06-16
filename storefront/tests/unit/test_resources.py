@@ -56,6 +56,57 @@ class TestParseResourceFromDict:
         result = parse_resource_from_dict(data)
         assert isinstance(result, ComputeResource)
 
+    def test_container_via_resource_type(self):
+        data = {
+            "resource_type": "compute.container",
+            "vcpu_count": 8,
+            "ram_gb": 16,
+            "disk_gb": 80,
+            "sla": 99.0,
+            "region": "California, US",
+            "vm_host": "aex-native-scm",
+            "virtualization_type": "container",
+        }
+        result = parse_resource_from_dict(data)
+        assert isinstance(result, ComputeResource)
+        assert result.gpu_model is None
+        assert result.gpu_count == 0
+        assert result.vcpu_count == 8
+        assert result.virtualization_type is not None
+
+    def test_container_via_discriminator_key_fallback(self):
+        """No resource_type, no gpu_model — virtualization_type routes to container."""
+        data = {
+            "vcpu_count": 4, "ram_gb": 8, "disk_gb": 40,
+            "sla": 90.0, "region": "California, US", "virtualization_type": "container",
+        }
+        result = parse_resource_from_dict(data)
+        assert isinstance(result, ComputeResource)
+        assert result.gpu_model is None
+
+    def test_gpu_and_container_offers_do_not_cross_match(self):
+        """Regression guard: a GPU demand must never be satisfied by a container
+        offer (and vice-versa), while like matches like."""
+        from market_storefront.models.domain_models import ComputeResourcePortfolio
+
+        container = ComputeResource(
+            gpu_model=None, gpu_count=0, sla=99.0, region="California, US",
+            vcpu_count=8, ram_gb=16, virtualization_type="container",
+        )
+        gpu = ComputeResource(gpu_model="H200", gpu_count=1, sla=99.0, region="California, US")
+        port_container = ComputeResourcePortfolio(resources=[container])
+        port_gpu = ComputeResourcePortfolio(resources=[gpu])
+
+        gpu_demand = ComputeResource(gpu_model="H200", gpu_count=1, sla=90.0, region="California, US")
+        container_demand = ComputeResource(
+            gpu_model=None, gpu_count=0, sla=90.0, region="California, US",
+            virtualization_type="container",
+        )
+        assert port_container.has_capacity(gpu_demand) is False
+        assert port_gpu.has_capacity(container_demand) is False
+        assert port_container.has_capacity(container_demand) is True
+        assert port_gpu.has_capacity(gpu_demand) is True
+
     def test_token_via_resource_type(self):
         data = {
             "resource_type": "token.erc20",
@@ -110,6 +161,27 @@ class TestDbRoundTrip:
         assert restored.gpu_count == COMPUTE.gpu_count
         assert restored.sla == COMPUTE.sla
         assert restored.region == COMPUTE.region
+
+    def test_container_round_trip(self):
+        container = ComputeResource(
+            gpu_model=None, gpu_count=0, sla=99.0, region="California, US",
+            vm_host="aex-native-scm", vcpu_count=8, ram_gb=16, disk_gb=80,
+            virtualization_type="container",
+        )
+        db_row = adapt_domain_resource_to_db_resource(
+            container, resource_id="res-c", state="available"
+        )
+        assert db_row["resource_type"] == "compute.container"
+        assert db_row["attributes"]["virtualization_type"] == "container"
+        assert db_row["attributes"]["vcpu_count"] == 8
+        assert db_row["attributes"]["vm_host"] == "aex-native-scm"
+
+        restored = adapt_db_resource_to_domain_resource(db_row)
+        assert isinstance(restored, ComputeResource)
+        assert restored.gpu_model is None
+        assert restored.vcpu_count == 8
+        assert restored.vm_host == "aex-native-scm"
+        assert restored.virtualization_type is not None
 
     def test_token_round_trip(self):
         db_row = adapt_domain_resource_to_db_resource(

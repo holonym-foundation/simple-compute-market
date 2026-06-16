@@ -267,12 +267,15 @@ class ComputeResource(ComputeDomainResource):
     )
 
     # ---- Slice fields (per-listing; the seller's split of the host) ----
-    gpu_model: str = Field(
+    gpu_model: str | None = Field(
+        default=None,
         description="GPU model identifier. The indexer's filter-spec.yaml "
                     "is the authoritative vocabulary; the storefront accepts "
-                    "any string."
+                    "any string. None for non-GPU slices (e.g. CPU/container "
+                    "compute) — has_capacity matches None to None, so a GPU "
+                    "demand never matches a container offer and vice-versa."
     )
-    gpu_count: int = Field(description="Number of GPUs in this slice")
+    gpu_count: int = Field(default=0, description="Number of GPUs in this slice (0 for non-GPU/container slices)")
     sla: float = Field(description="The SLA of this slice")
     region: str = Field(
         description="Geographic region of the slice (matches host region)"
