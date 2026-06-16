@@ -2198,6 +2198,10 @@ class SQLiteClient:
 
     @staticmethod
     def _requested_gpu_count(required_attributes: dict[str, Any] | None) -> int:
+        # Defaults to 1 when unspecified (a GPU demand omitting the count wants
+        # one GPU). 0 is valid: a container/CPU slice legitimately requests no
+        # GPUs (gpu_count=0); the offered resource matches via gpu_count >= 0.
+        # Negative is still rejected.
         raw = (required_attributes or {}).get("gpu_count")
         if raw is None:
             return 1
@@ -2205,8 +2209,8 @@ class SQLiteClient:
             requested = int(raw)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"gpu_count must be an integer, got {raw!r}") from exc
-        if requested < 1:
-            raise ValueError(f"gpu_count must be >= 1, got {requested}")
+        if requested < 0:
+            raise ValueError(f"gpu_count must be >= 0, got {requested}")
         return requested
 
     @classmethod
