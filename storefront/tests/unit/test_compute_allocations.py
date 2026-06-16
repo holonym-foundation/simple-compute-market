@@ -268,6 +268,50 @@ async def test_reserve_partial_gpu_capacity_keeps_pool_available(client):
     assert oversized is None
 
 
+async def _seed_container_pool(client: SQLiteClient, *, slots: int = 2) -> None:
+    await client.upsert_resource(
+        resource_id="pool-aex-native",
+        resource_type="compute.container",
+        resource_subtype="agent",
+        unit="count",
+        value=slots,
+        state="available",
+        attributes={
+            "virtualization_type": "container",
+            "sla": 99.0,
+            "region": "Falkenstein, DE",
+            "vm_host": "aex-native-scm",
+            "vcpu_count": 8,
+            "ram_gb": 16,
+            "disk_gb": 80,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_reserve_container_resource_count_based_capacity(client):
+    """A compute.container resource pools + reserves (gpu_count=0 demand),
+    each lease taking ONE slot; value=N admits N concurrent leases, N+1 rejected."""
+    await _seed_container_pool(client, slots=2)
+    demand = {"region": "Falkenstein, DE", "gpu_count": 0}
+
+    first = await client.reserve_available_compute_vm(
+        required_attributes=demand, listing_id="listing-c1", escrow_uid="escrow-c1",
+    )
+    assert first is not None
+    assert first["resource_id"] == "pool-aex-native"
+    assert first["vm_host"] == "aex-native-scm"
+    assert first["allocated_gpu_count"] == 1  # one slot, not gpu_count=0
+
+    second = await client.reserve_available_compute_vm(
+        required_attributes=demand, listing_id="listing-c2", escrow_uid="escrow-c2",
+    )
+    assert second is not None  # second slot fits (value=2)
+
+    third = await client.select_available_compute_vm(required_attributes=demand)
+    assert third is None  # capacity exhausted — NOT unlimited
+
+
 @pytest.mark.asyncio
 async def test_reserve_full_capacity_exposes_legacy_reserved_state(client):
     await _seed_compute_pool(client, gpu_count=4)
