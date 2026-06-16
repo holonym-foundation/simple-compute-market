@@ -115,6 +115,7 @@ class HostService:
             ssh_user=data.ssh_user,
             ssh_key_type=data.ssh_key_type,
             ssh_key_value=key_value,
+            host_type=data.host_type,
             gpu_count=data.gpu_count,
             enabled=data.enabled,
         )
@@ -271,7 +272,13 @@ class HostService:
         """Render *hosts* as an Ansible INI inventory string.
 
         Only ``enabled=True`` hosts should be passed; this method does not
-        filter.  The ``[kvm_hosts]`` group header is always emitted.
+        filter.  BOTH the ``[kvm_hosts]`` and ``[container_hosts]`` group
+        headers are always emitted (even when empty) so playbooks targeting
+        either group resolve.  Each host is placed in the group matching its
+        ``host_type`` (``container`` → ``[container_hosts]``, else
+        ``[kvm_hosts]``) — this is what lets ``container-operations.yaml``
+        (``hosts: container_hosts``) actually target a registered container
+        host such as aex-native-scm.
 
         For ``embedded`` hosts, the SSH key material is decrypted and
         written to a temp file by ``AnsibleService.write_inventory`` — this
@@ -281,24 +288,34 @@ class HostService:
         ``AnsibleService.write_inventory``, which calls
         ``get_decrypted_key_value`` per host.
         """
-        lines = ["[kvm_hosts]"]
+        groups: dict[str, list[Host]] = {"kvm_hosts": [], "container_hosts": []}
         for host in hosts:
-            # For path-type hosts the key path goes directly into the INI.
-            # For embedded-type hosts, AnsibleService.write_inventory will
-            # write a temp key file and substitute the path before passing
-            # the inventory to Ansible.  We use a sentinel here so
-            # write_inventory can locate and replace it.
-            if host.ssh_key_type == "path":
-                key_ref = host.ssh_key_value
-            else:
-                key_ref = f"__embedded_key_{host.name}__"
+            # Default to KVM for rows predating host_type (the migration
+            # backfills 'kvm', but stay defensive for in-memory test objects).
+            host_type = getattr(host, "host_type", None) or "kvm"
+            group = "container_hosts" if host_type == "container" else "kvm_hosts"
+            groups[group].append(host)
 
-            lines.append(
-                f"{host.name}"
-                f"  ansible_host={host.kvm_host}"
-                f"  ansible_user={host.ssh_user}"
-                f"  ansible_ssh_private_key_file={key_ref}"
-            )
+        lines: list[str] = []
+        for group_name in ("kvm_hosts", "container_hosts"):
+            lines.append(f"[{group_name}]")
+            for host in groups[group_name]:
+                # For path-type hosts the key path goes directly into the INI.
+                # For embedded-type hosts, AnsibleService.write_inventory will
+                # write a temp key file and substitute the path before passing
+                # the inventory to Ansible.  We use a sentinel here so
+                # write_inventory can locate and replace it.
+                if host.ssh_key_type == "path":
+                    key_ref = host.ssh_key_value
+                else:
+                    key_ref = f"__embedded_key_{host.name}__"
+
+                lines.append(
+                    f"{host.name}"
+                    f"  ansible_host={host.kvm_host}"
+                    f"  ansible_user={host.ssh_user}"
+                    f"  ansible_ssh_private_key_file={key_ref}"
+                )
         return "\n".join(lines) + "\n"
 
     def get_decrypted_key_value(self, host: Host) -> str:

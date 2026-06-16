@@ -87,6 +87,7 @@ def test_init_db_applies_versioned_migrations_to_old_sqlite_schema():
 
     assert "escrow_uid" in ansible_columns
     assert "public_host" in host_columns
+    assert "host_type" in host_columns
     assert "vm_leases" in inspector.get_table_names()
     assert "allocation_id" in lease_columns
 
@@ -107,6 +108,7 @@ def test_init_db_applies_versioned_migrations_to_old_sqlite_schema():
         "20260603_002_hosts_public_host",
         "20260603_003_vm_leases_table",
         "20260603_004_vm_leases_allocation_id",
+        "20260616_005_hosts_host_type",
     }
 
 
@@ -128,10 +130,11 @@ def test_init_db_migrations_are_idempotent():
 
     assert ansible_columns.count("escrow_uid") == 1
     assert host_columns.count("public_host") == 1
+    assert host_columns.count("host_type") == 1
     assert lease_columns.count("allocation_id") == 1
 
     with engine.begin() as connection:
         migration_count = connection.execute(
             text("SELECT COUNT(*) FROM schema_migrations")
         ).scalar_one()
-    assert migration_count == 4
+    assert migration_count == 5

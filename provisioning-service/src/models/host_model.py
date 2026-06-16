@@ -44,6 +44,14 @@ class HostCreate(BaseModel):
             "For 'embedded': raw unencrypted PEM private key content."
         )
     )
+    host_type: Literal["kvm", "container"] = Field(
+        default="kvm",
+        description=(
+            "'kvm' — a KVM/libvirt VM host (rendered into the [kvm_hosts] inventory "
+            "group, targeted by vm-operations). 'container' — a Docker container host "
+            "(rendered into [container_hosts], targeted by container-operations)."
+        ),
+    )
     gpu_count: int = Field(default=0, ge=0, description="Number of GPUs on this host.")
     enabled: bool = Field(default=True, description="Whether the host is active.")
 
@@ -59,6 +67,7 @@ class HostUpdate(BaseModel):
     ssh_user: Optional[str] = None
     ssh_key_type: Optional[Literal["path", "embedded"]] = None
     ssh_key_value: Optional[str] = None
+    host_type: Optional[Literal["kvm", "container"]] = None
     gpu_count: Optional[int] = Field(default=None, ge=0)
 
 
@@ -74,6 +83,7 @@ class HostResponse(BaseModel):
     public_host: Optional[str] = None
     ssh_user: str
     ssh_key_type: str
+    host_type: str = "kvm"
     gpu_count: int
     enabled: bool
 

@@ -279,6 +279,28 @@ class TestRenderInventoryIni:
         assert "kvm1" in ini
         assert "ww2" in ini
 
+    def test_emits_both_group_headers(self, svc):
+        # Both headers always present so playbooks targeting either group resolve.
+        ini = svc.render_inventory_ini([])
+        assert "[kvm_hosts]" in ini
+        assert "[container_hosts]" in ini
+
+    def test_container_host_renders_under_container_group(self, svc):
+        hosts = [
+            Host(name="aex-native-scm", kvm_host="167.233.97.235", ssh_user="root",
+                 ssh_key_type="path", ssh_key_value="/key", host_type="container",
+                 gpu_count=0, enabled=True),
+            Host(name="kvm1", kvm_host="10.0.0.1", ssh_user="ubuntu",
+                 ssh_key_type="path", ssh_key_value="/key", host_type="kvm",
+                 gpu_count=0, enabled=True),
+        ]
+        ini = svc.render_inventory_ini(hosts)
+        kvm_block = ini.split("[container_hosts]")[0]
+        container_block = ini.split("[container_hosts]")[1]
+        # The container host lands only in [container_hosts]; the kvm host only in [kvm_hosts].
+        assert "aex-native-scm" in container_block and "aex-native-scm" not in kvm_block
+        assert "kvm1" in kvm_block and "kvm1" not in container_block
+
 
 # ---------------------------------------------------------------------------
 # list_hosts enabled_only filter
