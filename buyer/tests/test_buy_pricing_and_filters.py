@@ -134,6 +134,22 @@ class TestQueryRegistryFilters:
         assert params["static_ip"] == ["false"]
         assert "region" not in params  # None filtered out
 
+    def test_container_filters_serialized_without_gpu_model(self, monkeypatch):
+        """A container buy filters by virtualization_type + vcpu, no gpu_model."""
+        captured = self._patch_urlopen(monkeypatch)
+        query_registry_for_matches(
+            "http://reg",
+            filters={
+                "virtualization_type": "container",
+                "vcpu_count_min": 4,
+                "gpu_model": None,  # dropped — containers have no GPU
+            },
+        )
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(captured["url"]).query)
+        assert params["virtualization_type"] == ["container"]
+        assert params["vcpu_count_min"] == ["4"]
+        assert "gpu_model" not in params  # None filtered out
+
     def test_returns_items_list(self, monkeypatch):
         items = [{"listing_id": "a"}, {"listing_id": "b"}]
         body = json.dumps({"items": items}).encode("utf-8")
