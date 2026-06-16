@@ -189,6 +189,104 @@ class ComputeGpuResourceAdapter:
 
 
 @dataclass(frozen=True)
+class ComputeContainerResourceAdapter:
+    """Adapter for ``compute.container`` slices — CPU/RAM/disk container compute
+    on a Docker host (no GPU). Reuses the GPU adapter's ``ComputeResource``
+    domain model with ``gpu_model=None`` / ``gpu_count=0``; the slice's identity
+    is its vcpu/ram/disk + ``virtualization_type=container``. ``has_capacity``
+    matches ``None`` gpu_model to ``None``, so a GPU demand never matches a
+    container offer and vice-versa. Lets container resources be published,
+    discovered, and reserved — the storefront then dispatches ``create_container``
+    on ``virtualization_type`` (see action_executor)."""
+
+    resource_type: str = "compute.container"
+    domain_type: type = ComputeResource
+    # Fallback discriminator only — callers should send an explicit
+    # ``resource_type`` (parse_resource_from_dict prefers it). GPU offers always
+    # carry ``gpu_model`` (matched first), so a container offer (no gpu_model,
+    # with virtualization_type) routes here.
+    discriminator_key: str = "virtualization_type"
+
+    def to_domain_resource(
+        self,
+        db_resource: dict[str, Any],
+        host_row: dict[str, Any] | None = None,
+    ) -> ComputeResource:
+        attrs = _ensure_dict(db_resource.get("attributes"))
+        sla = attrs.get("sla")
+        region = attrs.get("region")
+        vm_host = attrs.get("vm_host")
+        if sla is None or region is None:
+            raise ValueError(
+                "compute.container db_resource requires attributes.sla and attributes.region"
+            )
+
+        slice_kwargs: dict[str, Any] = {}
+        for field_name, coerce in _COMPUTE_SLICE_FIELDS:
+            raw = attrs.get(field_name)
+            if raw is None:
+                continue
+            slice_kwargs[field_name] = coerce(raw) if coerce is not None else raw
+        slice_kwargs.setdefault("virtualization_type", VirtualizationType("container"))
+
+        host_kwargs: dict[str, Any] = {}
+        host_source = host_row if host_row is not None else attrs
+        for field_name, coerce in _COMPUTE_HOST_CONTEXT_FIELDS:
+            raw = host_source.get(field_name)
+            if raw is None:
+                continue
+            host_kwargs[field_name] = coerce(raw) if coerce is not None else raw
+
+        return ComputeResource(
+            resource_id=str(db_resource.get("resource_id")) if db_resource.get("resource_id") is not None else None,
+            gpu_model=None,
+            gpu_count=0,
+            sla=float(sla),
+            region=region,
+            vm_host=str(vm_host) if vm_host is not None else None,
+            **slice_kwargs,
+            **host_kwargs,
+        )
+
+    def from_domain_resource(
+        self,
+        resource: ComputeResource,
+        *,
+        resource_id: str,
+        state: str | None = None,
+    ) -> dict[str, Any]:
+        attributes: dict[str, Any] = {
+            "sla": resource.sla,
+            "region": resource.region,
+            "vm_host": resource.vm_host,
+        }
+        for field_name, _ in _COMPUTE_SLICE_FIELDS:
+            v = getattr(resource, field_name)
+            if v is None:
+                continue
+            attributes[field_name] = v.value if isinstance(v, Enum) else v
+        attributes.setdefault("virtualization_type", "container")
+        return {
+            "resource_id": resource_id,
+            "resource_type": self.resource_type,
+            "resource_subtype": "container",
+            "unit": "count",
+            "value": resource.vcpu_count or 1,
+            "state": state,
+            "attributes": attributes,
+        }
+
+    def from_dict(self, data: dict[str, Any]) -> ComputeResource:
+        d = {k: v for k, v in data.items() if k != "resource_type"}
+        d.setdefault("gpu_model", None)
+        d.setdefault("gpu_count", 0)
+        return ComputeResource(**d)
+
+    def to_dict(self, resource: ComputeResource) -> dict[str, Any]:
+        return {"resource_type": self.resource_type, **resource.model_dump()}
+
+
+@dataclass(frozen=True)
 class TokenErc20ResourceAdapter:
     resource_type: str = "token.erc20"
     domain_type: type = TokenResource
@@ -350,7 +448,12 @@ def register_resource_adapter(adapter: ResourceAdapter) -> None:
     Register a ResourceAdapter for mapping between DB rows, network dicts, and domain schemas.
     """
     _RESOURCE_TYPE_TO_ADAPTER[adapter.resource_type] = adapter
-    _DOMAIN_TYPE_TO_ADAPTER[adapter.domain_type] = adapter
+    # First registration wins the domain-type map: compute.gpu and
+    # compute.container share the ComputeResource domain type, so the GPU
+    # adapter (registered first) stays the default for ComputeResource. The
+    # domain->db direction disambiguates GPU vs container by content (gpu_model)
+    # in adapt_domain_resource_to_db_resource.
+    _DOMAIN_TYPE_TO_ADAPTER.setdefault(adapter.domain_type, adapter)
 
 
 def get_resource_adapter(resource_type: str) -> ResourceAdapter | None:
@@ -390,7 +493,14 @@ def adapt_domain_resource_to_db_resource(
     Adapt a domain resource instance to a DB resource dict using the registered adapter.
     Raises ValueError if no adapter is found for the resource's type or if the adapter fails to convert.
     """
-    adapter = _DOMAIN_TYPE_TO_ADAPTER.get(type(resource))
+    # compute.gpu and compute.container share the ComputeResource domain type;
+    # disambiguate by content — a GPU slice has gpu_model set, a container slice
+    # does not (gpu_model is None).
+    if isinstance(resource, ComputeResource):
+        rt = "compute.gpu" if resource.gpu_model is not None else "compute.container"
+        adapter = _RESOURCE_TYPE_TO_ADAPTER.get(rt)
+    else:
+        adapter = _DOMAIN_TYPE_TO_ADAPTER.get(type(resource))
     if adapter is None:
         raise ValueError(f"Unsupported domain resource type: {type(resource).__name__}")
     return adapter.from_domain_resource(resource, resource_id=resource_id, state=state)
@@ -424,4 +534,5 @@ def parse_resource_from_dict(data: Any) -> Any:
 
 # Register built-in adapters.
 register_resource_adapter(ComputeGpuResourceAdapter())
+register_resource_adapter(ComputeContainerResourceAdapter())
 register_resource_adapter(TokenErc20ResourceAdapter())

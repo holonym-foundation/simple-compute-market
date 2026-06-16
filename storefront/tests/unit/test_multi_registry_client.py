@@ -63,7 +63,7 @@ class _FakeRegistry:
             raise action
         return action
 
-    async def publish_listing(self, listing, private_key):
+    async def publish_listing(self, listing, private_key=None, *, address=None, sign_fn=None):
         action = self.responses.get(self.url, {}).get("publish_listing")
         if isinstance(action, BaseException):
             raise action
