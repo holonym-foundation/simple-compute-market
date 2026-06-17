@@ -7,8 +7,20 @@
 container_runtime: docker
 
 # Default tenant image (override per-listing via `container_image`). The AEX agent
-# base image (recipe runtime) is published to a registry the provider can pull.
+# base image (recipe runtime) is built from holonym-foundation/aex `agent-base/`
+# and published PRIVATE to GHCR — gated so it can't be run outside AEX.
 container_default_image: "ghcr.io/holonym-foundation/aex-agent-base:latest"
+
+# Private-registry pull auth. The base image is private, so the provider host
+# authenticates before pulling. Default OFF (empty type → docker_login skipped).
+# A provider host enables it via host vars, e.g.:
+#   container_registry_type: generic
+#   container_registry_url: ghcr.io
+#   container_registry_username: <ghcr-user>
+#   container_registry_password: <read:packages PAT>   # READ-ONLY token, NEVER a
+#                                                       # write token on a tenant host
+container_registry_type: ""                   # generic | dockerhub | '' (none)
+container_registry_url: "ghcr.io"
 
 # Resource caps — fair-share + blast-radius. One tenant cannot starve the host.
 container_default_memory: "512m"
@@ -18,11 +30,13 @@ container_default_pids_limit: 256
 container_restart_policy: "unless-stopped"
 container_network_mode: "bridge"
 
-# The per-tenant $HOME holds the WaaP credential. It is mounted from a per-tenant
-# NAMED VOLUME that only this container mounts — so a sibling container can never
-# read it. This is the cross-tenant isolation guarantee (replaces the SEV-HIGH
-# shared-user model on the legacy box).
-container_home_path: "/home/agent/.home"
+# The per-tenant state dir (WaaP creds, config, KB, data). Mounted from a
+# per-tenant NAMED VOLUME that only this container mounts — so a sibling can
+# never read it (cross-tenant isolation; replaces the SEV-HIGH shared-user model
+# on the legacy box). MUST match the base image's home/data dir: the AEX agent
+# base (holonym-foundation/aex agent-base/) is built on Hermes, whose non-root
+# user's home + state volume is /opt/data.
+container_home_path: "/opt/data"
 
 # Hardening defaults. The tenant terminal is an interactive shell, so each
 # container is treated as hostile: the goal is maximal freedom INSIDE the
@@ -38,9 +52,10 @@ container_read_only_rootfs: true            # immutable rootfs; writable state -
 container_no_new_privileges: true
 # Run as a fixed non-root UID:GID. With userns-remap this maps to an
 # unprivileged (and per-tenant-distinct) host UID, so even root-in-container
-# cannot read a sibling's home volume off the host. Agent base images MUST ship
-# this user and own container_home_path.
-container_user: "10001:10001"
+# cannot read a sibling's home volume off the host. MUST be the UID the base
+# image ships + owns container_home_path: the AEX agent base inherits Hermes's
+# `hermes` user (UID 10000, owns /opt/data).
+container_user: "10000:10000"
 # Drop ALL Linux capabilities, add back only what an agent legitimately needs
 # (none by default). Blocks the bulk of escape / host-tamper vectors.
 container_cap_drop: ["ALL"]
