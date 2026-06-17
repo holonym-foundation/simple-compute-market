@@ -38,12 +38,27 @@ so **open-but-watched**, not allowlisted:
 - Block obvious abuse (SMTP/25 egress, RFC1918 lateral movement to the host/other tenants' subnets, metadata endpoints `169.254.169.254`).
 - Monitor for mining CPU signatures, scan bursts, and abuse complaints; the deploy kill-switch + `container-stop` are the response.
 
-Minimum `DOCKER-USER` baseline (block lateral + metadata, rate-limit the rest):
+Minimum `DOCKER-USER` baseline (block metadata + SMTP + host lateral). **Ordering
+matters:** `-I` prepends, so the LAST insert is matched FIRST. The docker bridge
+subnet must be RETURN-ed *above* any RFC1918/link-local DROP or you break the
+container's own gateway/DNS and kill all egress. Applied ruleset (top = first match):
 ```
-iptables -I DOCKER-USER -d 169.254.169.254 -j DROP
-iptables -I DOCKER-USER -d 172.16.0.0/12 -m conntrack --ctstate NEW -j DROP   # host/sibling lateral
-iptables -I DOCKER-USER -p tcp --dport 25 -j DROP                              # SMTP egress
+# resolve these per host first:
+BR_SUBNET=$(docker network inspect bridge -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}')   # e.g. 172.17.0.0/16
+HOST_IP=$(ip -4 route get 1.1.1.1 | awk '{print $7; exit}')
+
+iptables -I DOCKER-USER -p tcp --dport 25  -j DROP                 # SMTP egress (anti-spam)
+iptables -I DOCKER-USER -p tcp --dport 465 -j DROP
+iptables -I DOCKER-USER -p tcp --dport 587 -j DROP
+iptables -I DOCKER-USER -d "$HOST_IP/32" -m conntrack --ctstate NEW -j DROP  # block reaching the host
+iptables -I DOCKER-USER -d "$BR_SUBNET" -j RETURN                 # ALLOW bridge gw/DNS (must sit above the DROPs below)
+iptables -I DOCKER-USER -d 169.254.0.0/16 -j DROP                 # link-local
+iptables -I DOCKER-USER -d 169.254.169.254/32 -j DROP             # cloud metadata (re-assert on top, first match)
+iptables-save > /etc/iptables/rules.v4   # persist (iptables-persistent)
 ```
+Verify after applying: a fresh container can still reach the internet + chain RPC
+but **cannot** reach `169.254.169.254`. **Applied + verified on aex-native-scm
+(167.233.97.235) 2026-06.**
 
 ## 4. Per-tenant disk quota
 The home volume must be quota-capped (project quota on the volumes filesystem, or a
