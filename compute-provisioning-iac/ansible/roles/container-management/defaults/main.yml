@@ -24,9 +24,30 @@ container_network_mode: "bridge"
 # shared-user model on the legacy box).
 container_home_path: "/home/agent/.home"
 
-# Hardening defaults
-container_read_only_rootfs: false
+# Hardening defaults. The tenant terminal is an interactive shell, so each
+# container is treated as hostile: the goal is maximal freedom INSIDE the
+# sandbox, hard walls AROUND it (other tenants, the host, AEX keys).
+#
+# NOTE — daemon-level controls that complete this model are NOT settable per
+# container and MUST be configured on the host (see HARDENING.md): docker
+# `userns-remap` (so container-root != host-root — the primary defense against a
+# container escape reading another tenant's home volume on disk), the default
+# seccomp + AppArmor profiles (do not disable), `DOCKER-USER` egress
+# rate-limit/monitoring, and a per-tenant disk quota.
+container_read_only_rootfs: true            # immutable rootfs; writable state -> home volume + tmpfs
 container_no_new_privileges: true
+# Run as a fixed non-root UID:GID. With userns-remap this maps to an
+# unprivileged (and per-tenant-distinct) host UID, so even root-in-container
+# cannot read a sibling's home volume off the host. Agent base images MUST ship
+# this user and own container_home_path.
+container_user: "10001:10001"
+# Drop ALL Linux capabilities, add back only what an agent legitimately needs
+# (none by default). Blocks the bulk of escape / host-tamper vectors.
+container_cap_drop: ["ALL"]
+container_cap_add: []
+# Writable ephemeral paths when the rootfs is read-only. Tenant PERSISTENT state
+# (keys, KB, data, config) belongs in the home volume, never tmpfs.
+container_tmpfs: ["/tmp", "/run"]
 
 # Teardown: destroy removes the home volume; lease_end keeps it (resume/reclaim).
 container_remove_volume: true
