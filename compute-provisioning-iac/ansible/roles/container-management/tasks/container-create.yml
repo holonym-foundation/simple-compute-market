@@ -46,11 +46,15 @@
     image: "{{ container_image_ref }}"
     state: started
     restart_policy: "{{ container_restart_policy }}"
+    user: "{{ container_user | default(omit) }}"
     memory: "{{ container_memory }}"
     cpus: "{{ container_cpus | float }}"
     pids_limit: "{{ container_pids_limit | int }}"
     read_only: "{{ container_read_only_rootfs | bool }}"
+    cap_drop: "{{ container_cap_drop | default(['ALL']) }}"
+    capabilities: "{{ container_cap_add | default([]) }}"
     security_opts: "{{ ['no-new-privileges'] if (container_no_new_privileges | bool) else omit }}"
+    tmpfs: "{{ container_tmpfs if (container_read_only_rootfs | bool) else omit }}"
     network_mode: "{{ container_network_mode }}"
     env: "{{ container_env | default({}) }}"
     volumes:
