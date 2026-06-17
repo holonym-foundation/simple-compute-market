@@ -334,3 +334,142 @@ def show_cmd(
     )
     body.add_row("Demand", ("0x" + demand_bytes.hex()) if demand_bytes else "-")
     console.print(Panel(body, title="ERC-20 escrow obligation data", border_style="cyan"))
+
+
+def _resolve_single_chain(chain_name: Optional[str]):
+    """Resolve a configured chain (mirrors `show`): explicit --chain, or the
+    sole chain when only one is configured. Exits 2 on ambiguity/missing."""
+    from ..utils.config import CHAINS
+
+    if not CHAINS:
+        typer.secho(
+            "No [chains.<name>] tables configured in storefront.toml.",
+            err=True, fg=typer.colors.RED,
+        )
+        raise typer.Exit(2)
+    if chain_name is None:
+        if len(CHAINS) == 1:
+            chain_name = next(iter(CHAINS))
+        else:
+            typer.secho(
+                f"Multiple chains configured ({sorted(CHAINS)}); pass --chain.",
+                err=True, fg=typer.colors.RED,
+            )
+            raise typer.Exit(2)
+    chain = CHAINS.get(chain_name)
+    if chain is None:
+        typer.secho(
+            f"Chain {chain_name!r} not configured. Available: {sorted(CHAINS)}",
+            err=True, fg=typer.colors.RED,
+        )
+        raise typer.Exit(2)
+    return chain
+
+
+@escrow_app.command("reconcile")
+def reconcile_cmd(
+    chain_name: str = typer.Option(
+        None, "--chain", help="Chain name; defaults to the only configured chain.",
+    ),
+    db: str = typer.Option(
+        None, "--db", help="Storefront SQLite path (defaults to settings.db_path).",
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit the report as JSON for tooling/monitoring.",
+    ),
+) -> None:
+    """Cross-check held compute allocations against their on-chain escrows.
+
+    Flags STALE HOLDS — allocations still holding capacity whose escrow has
+    vanished on-chain (reclaimed / revoked / expired). The lease watchdog only
+    releases on time, so this catches early-gone escrows it would miss.
+    Report-only (never releases capacity). Exit code 3 when stale holds exist
+    (monitoring-friendly); a transient chain-read error is reported as UNKNOWN,
+    never a stale hold.
+    """
+    import asyncio
+    import json as _json
+
+    from alkahest_py import AlkahestClient
+
+    from ..cli_common import _resolve_db_path
+    from ..services.escrow_reconciler import (
+        exit_code_for,
+        reconcile_db,
+        report_to_dict,
+    )
+    from ..utils.config import settings
+    from service.clients.alkahest import (
+        get_alkahest_network,
+        prewarm_alkahest_address_config_cache,
+        resolve_alkahest_address_config,
+    )
+
+    chain = _resolve_single_chain(chain_name)
+    db_path = _resolve_db_path(db) or getattr(settings, "db_path", None)
+    if not db_path:
+        typer.secho(
+            "Could not resolve the storefront DB path (pass --db or set db_path).",
+            err=True, fg=typer.colors.RED,
+        )
+        raise typer.Exit(2)
+    if not settings.wallet.private_key:
+        typer.secho(
+            "Missing wallet.private_key in storefront.toml — alkahest_py "
+            "requires a wallet key even for read-only inspection.",
+            err=True, fg=typer.colors.RED,
+        )
+        raise typer.Exit(2)
+
+    try:
+        prewarm_alkahest_address_config_cache(chain.alkahest_address_config_path)
+        address_config = resolve_alkahest_address_config(
+            get_alkahest_network(chain.name),
+            config_path=chain.alkahest_address_config_path,
+        )
+    except Exception as exc:
+        typer.secho(str(exc), err=True, fg=typer.colors.RED)
+        raise typer.Exit(2)
+
+    client = AlkahestClient(
+        private_key=settings.wallet.private_key,
+        rpc_url=chain.rpc_url,
+        address_config=address_config,
+    )
+
+    async def get_obligation_fn(c, uid):
+        return await c.erc20.escrow.non_tierable.get_obligation(uid)
+
+    report = asyncio.run(
+        reconcile_db(
+            db_path=db_path,
+            alkahest_client=client,
+            get_obligation_fn=get_obligation_fn,
+        )
+    )
+
+    if as_json:
+        typer.echo(_json.dumps(report_to_dict(report)))
+        raise typer.Exit(exit_code_for(report))
+
+    console = Console()
+    s = report.summary()
+    console.print(
+        f"Reconciled [bold]{s['checked']}[/] held allocation(s): "
+        f"[green]{s['ok']} ok[/], "
+        f"[red]{s['stale_holds']} stale[/], "
+        f"[yellow]{s['unknown']} unknown[/]"
+    )
+    if report.stale_holds:
+        t = Table(title="Stale holds — escrow gone, capacity still held")
+        t.add_column("allocation_id"); t.add_column("resource_id")
+        t.add_column("escrow_uid"); t.add_column("state")
+        for f in report.stale_holds:
+            a = f.allocation
+            t.add_row(a.allocation_id, a.resource_id, a.escrow_uid, a.state)
+        console.print(t)
+        console.print(
+            "[dim]Report-only. Investigate, then release via the resource "
+            "patch path (set resource available) to free capacity.[/]"
+        )
+    raise typer.Exit(exit_code_for(report))
