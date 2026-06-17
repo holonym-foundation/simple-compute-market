@@ -6,7 +6,11 @@ services:
     image: arkhai:test-env
     container_name: anvil
     ports:
-      - "8545:8545"
+      # Loopback-only: inter-service traffic uses the `anvil:8545` service
+      # name over the compose network; the host publish is for local debugging
+      # only and must never be world-reachable (it's an unauthenticated chain
+      # with funded test accounts). Defense-in-depth behind the cloud firewall.
+      - "127.0.0.1:8545:8545"
     environment:
       - ANVIL_IP_ADDR=0.0.0.0
     healthcheck:
@@ -189,18 +193,7 @@ services:
       retries: 6
       start_period: 10s
 
-  # 4. Redis (job queue for provisioning service)
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-
-  # 5. Provisioning service.
+  # 4. Provisioning service.
   # Configuration is bundled in the image (provisioning-service/src/settings.toml,
   # plus dynaconf profile loading via ACTIVE_PROFILES). Compose-time
   # overrides go in `environment:` below.
@@ -208,15 +201,12 @@ services:
     image: arkhai:provisioning
     platform: linux/amd64
     depends_on:
-      redis:
-        condition: service_healthy
       registry:
         condition: service_healthy
     ports:
       - "8081:8081"
     environment:
       - DATABASE_URL=sqlite:////app/data/provisioning.db
-      - REDIS_URL=redis://redis:6379
       # Mounts /test/* router used by integration tests' provisioning_test_client
       # (TestStage07 mock-rules). Should never be set in staging/prod.
       - ACTIVE_PROFILES=mock

@@ -11,7 +11,8 @@ import time
 from collections import defaultdict
 from collections.abc import MutableMapping
 
-from fastapi import HTTPException, Request, status
+from fastapi import Request, status
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
@@ -61,9 +62,12 @@ class AgentRateLimitMiddleware(BaseHTTPMiddleware):
         if not self.limiter.is_allowed(agent_id):
             remaining = self.limiter.remaining(agent_id)
             logger.warning("Rate limit exceeded for agent %s", agent_id)
-            raise HTTPException(
+            # Return a Response, not `raise HTTPException`: BaseHTTPMiddleware
+            # runs OUTSIDE Starlette's ExceptionMiddleware, so a raised
+            # HTTPException is never converted to a 429 — it surfaces as a 500.
+            return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Rate limit exceeded. Try again later.",
+                content={"detail": "Rate limit exceeded. Try again later."},
                 headers={
                     "X-RateLimit-Remaining": str(remaining),
                     "Retry-After": "60",
