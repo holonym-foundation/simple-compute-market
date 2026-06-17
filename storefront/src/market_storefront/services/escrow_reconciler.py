@@ -80,6 +80,31 @@ class ReconcileReport:
         }
 
 
+def _finding_dict(f: "Finding") -> dict[str, Any]:
+    return {
+        "allocation_id": f.allocation.allocation_id,
+        "resource_id": f.allocation.resource_id,
+        "escrow_uid": f.allocation.escrow_uid,
+        "state": f.allocation.state,
+        "escrow_status": f.escrow_status.value,
+        "drift": f.drift.value,
+    }
+
+
+def report_to_dict(report: "ReconcileReport") -> dict[str, Any]:
+    """JSON-serializable view of a report (the CLI's --json contract)."""
+    return {
+        "summary": report.summary(),
+        "stale_holds": [_finding_dict(f) for f in report.stale_holds],
+        "unknown": [_finding_dict(f) for f in report.unknown],
+    }
+
+
+def exit_code_for(report: "ReconcileReport") -> int:
+    """0 = clean; 3 = stale holds found (monitoring-friendly non-zero)."""
+    return 3 if report.stale_holds else 0
+
+
 def classify(allocation: HeldAllocation, escrow_status: EscrowStatus) -> Drift:
     """Map (held allocation, on-chain escrow status) → drift classification."""
     if escrow_status is EscrowStatus.GONE:

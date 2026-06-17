@@ -13,10 +13,13 @@ from market_storefront.services.escrow_reconciler import (
     EscrowStatus,
     Finding,
     HeldAllocation,
+    ReconcileReport,
     classify,
+    exit_code_for,
     load_held_allocations,
     read_escrow_status,
     reconcile,
+    report_to_dict,
 )
 
 
@@ -131,6 +134,30 @@ class TestLoadHeldAllocations:
     def test_active_hold_states_exclude_releasing(self):
         assert "releasing" not in ACTIVE_HOLD_STATES
         assert set(ACTIVE_HOLD_STATES) == {"reserved", "provisioning", "leased", "held"}
+
+
+class TestReportSerialization:
+    def _report(self):
+        held = [_alloc("0xa", "leased"), _alloc("0xb", "reserved"), _alloc("0xc", "held")]
+        status = {"0xa": EscrowStatus.ACTIVE, "0xb": EscrowStatus.GONE, "0xc": EscrowStatus.UNREADABLE}
+        return reconcile(held, lambda uid: status[uid])
+
+    def test_exit_code_3_when_stale(self):
+        assert exit_code_for(self._report()) == 3
+
+    def test_exit_code_0_when_clean(self):
+        clean = reconcile([_alloc("0xa")], lambda uid: EscrowStatus.ACTIVE)
+        assert exit_code_for(clean) == 0
+
+    def test_report_to_dict_shape(self):
+        d = report_to_dict(self._report())
+        assert d["summary"] == {"checked": 3, "stale_holds": 1, "unknown": 1, "ok": 1}
+        assert [f["escrow_uid"] for f in d["stale_holds"]] == ["0xb"]
+        assert d["stale_holds"][0]["drift"] == "stale_hold"
+        assert [f["escrow_uid"] for f in d["unknown"]] == ["0xc"]
+        # JSON-serializable
+        import json
+        json.dumps(d)
 
 
 class TestReconcileDb:
