@@ -100,6 +100,12 @@ services:
         condition: service_completed_successfully
     environment:
       - ACTIVE_PROFILES=seller
+      # Per-agent rate limit on the buyer-facing provisioning API (off by
+      # default in settings.toml). Generous ceiling: blocks abuse/scan bursts
+      # without throttling a normal agent's deploy + lifecycle calls. Tune via
+      # PROVISIONING_RATE_LIMIT_REQUESTS_PER_MINUTE.
+      - PROVISIONING_ENABLE_RATE_LIMITING=${PROVISIONING_ENABLE_RATE_LIMITING:-true}
+      - PROVISIONING_RATE_LIMIT_REQUESTS_PER_MINUTE=${PROVISIONING_RATE_LIMIT_REQUESTS_PER_MINUTE:-60}
     volumes:
       # Same storefront TOML the seller-storefront reads. The provisioning
       # service reads `admin_api_key` from it so the operator writes the
