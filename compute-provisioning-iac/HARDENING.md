@@ -60,6 +60,27 @@ Verify after applying: a fresh container can still reach the internet + chain RP
 but **cannot** reach `169.254.169.254`. **Applied + verified on aex-native-scm
 (167.233.97.235) 2026-06.**
 
+## 3b. Inter-container isolation (no sibling↔sibling)
+Tenants share the host's default `docker0` bridge, and Docker's inter-container
+communication (ICC) is **on by default** — so tenant A can reach tenant B's
+container over the network (scan ports, hit B's agent's listeners, exploit/extract
+from any service B runs). userns-remap protects the *volume*, not network
+reachability. Close it:
+```json
+// /etc/docker/daemon.json
+{ "icc": false }
+```
+Restart docker, then belt-and-suspenders in `DOCKER-USER` (safe because tenant
+DNS resolves via EXTERNAL resolvers, not the bridge gateway, and egress packets
+are dst=external so they don't match):
+```
+iptables -I DOCKER-USER -s 172.17.0.0/16 -d 172.17.0.0/16 -j DROP   # block container<->container
+```
+Verify: two test containers — B cannot reach A's published port, but both still
+reach the internet + chain RPC. **Applied + verified on aex-native-scm 2026-06.**
+End-state (future): controlled, platform-rate-limited, *paid* inbound to a
+container (per-tenant ingress), not the open shared bridge.
+
 ## 4. Per-tenant disk quota
 The home volume must be quota-capped (project quota on the volumes filesystem, or a
 sized volume driver) so one tenant cannot fill the host disk and DoS the others.
