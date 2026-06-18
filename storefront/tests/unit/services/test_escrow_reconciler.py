@@ -19,6 +19,7 @@ from market_storefront.services.escrow_reconciler import (
     load_held_allocations,
     read_escrow_status,
     reconcile,
+    remediate_stale_holds,
     report_to_dict,
 )
 
@@ -158,6 +159,47 @@ class TestReportSerialization:
         # JSON-serializable
         import json
         json.dumps(d)
+
+
+class TestRemediateStaleHolds:
+    def _report(self):
+        held = [_alloc("0xstale", "leased"), _alloc("0xok", "leased"), _alloc("0xunk", "held")]
+        status = {"0xstale": EscrowStatus.GONE, "0xok": EscrowStatus.ACTIVE, "0xunk": EscrowStatus.UNREADABLE}
+        return reconcile(held, lambda uid: status[uid])
+
+    def test_releases_only_stale_holds(self):
+        released = []
+        async def release_fn(alloc):
+            released.append(alloc.escrow_uid)
+        out = asyncio.run(remediate_stale_holds(self._report(), release_fn))
+        # only the GONE escrow is released — never the ACTIVE or UNREADABLE ones
+        assert released == ["0xstale"]
+        assert out == [{"allocation_id": "a1", "resource_id": "r1", "released": True}]
+
+    def test_release_failure_recorded_and_loop_continues(self):
+        report = reconcile(
+            [HeldAllocation("a1", "r1", "0xs1", "leased"), HeldAllocation("a2", "r2", "0xs2", "leased")],
+            lambda uid: EscrowStatus.GONE,
+        )
+        calls = []
+        async def release_fn(alloc):
+            calls.append(alloc.allocation_id)
+            if alloc.allocation_id == "a1":
+                raise RuntimeError("transition rejected")
+        out = asyncio.run(remediate_stale_holds(report, release_fn))
+        assert calls == ["a1", "a2"]  # didn't abort after a1 failed
+        assert out[0] == {"allocation_id": "a1", "resource_id": "r1", "released": False, "error": "transition rejected"}
+        assert out[1]["released"] is True
+
+    def test_no_stale_holds_is_noop(self):
+        report = reconcile([_alloc("0xok")], lambda uid: EscrowStatus.ACTIVE)
+        called = False
+        async def release_fn(alloc):
+            nonlocal called
+            called = True
+        out = asyncio.run(remediate_stale_holds(report, release_fn))
+        assert out == []
+        assert called is False
 
 
 class TestReconcileDb:
