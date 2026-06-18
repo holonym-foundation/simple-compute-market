@@ -377,15 +377,20 @@ def reconcile_cmd(
     as_json: bool = typer.Option(
         False, "--json", help="Emit the report as JSON for tooling/monitoring.",
     ),
+    remediate: bool = typer.Option(
+        False, "--remediate",
+        help="Release stale holds (free the capacity). Off by default — this "
+             "mutates state. Only STALE holds are released, never UNKNOWN.",
+    ),
 ) -> None:
     """Cross-check held compute allocations against their on-chain escrows.
 
     Flags STALE HOLDS — allocations still holding capacity whose escrow has
     vanished on-chain (reclaimed / revoked / expired). The lease watchdog only
     releases on time, so this catches early-gone escrows it would miss.
-    Report-only (never releases capacity). Exit code 3 when stale holds exist
-    (monitoring-friendly); a transient chain-read error is reported as UNKNOWN,
-    never a stale hold.
+    Report-only unless --remediate (which releases stale holds via the same
+    idempotent resource-transition the watchdog uses). Exit code 3 when stale
+    holds exist; a transient chain-read error is UNKNOWN, never a stale hold.
     """
     import asyncio
     import json as _json
@@ -396,9 +401,11 @@ def reconcile_cmd(
     from ..services.escrow_reconciler import (
         exit_code_for,
         reconcile_db,
+        remediate_stale_holds,
         report_to_dict,
     )
     from ..utils.config import settings
+    from ..utils.sqlite_client import SQLiteClient
     from service.clients.alkahest import (
         get_alkahest_network,
         prewarm_alkahest_address_config_cache,
@@ -448,8 +455,29 @@ def reconcile_cmd(
         )
     )
 
+    remediation = None
+    if remediate and report.stale_holds:
+        store = SQLiteClient(db_path)
+
+        async def _release(alloc):
+            # Same idempotent transition the lease watchdog uses to free a
+            # resource: set state available + name the allocation so only it is
+            # released. Idempotent by key, so a re-run is a no-op.
+            return await store.apply_resource_transition(
+                resource_id=alloc.resource_id,
+                event_type="reconcile_release_stale_hold",
+                idempotency_key=f"reconcile-release:{alloc.escrow_uid}:{alloc.resource_id}",
+                set_state="available",
+                set_attribute={"$.allocation_id": alloc.allocation_id},
+            )
+
+        remediation = asyncio.run(remediate_stale_holds(report, _release))
+
     if as_json:
-        typer.echo(_json.dumps(report_to_dict(report)))
+        out = report_to_dict(report)
+        if remediation is not None:
+            out["remediation"] = remediation
+        typer.echo(_json.dumps(out))
         raise typer.Exit(exit_code_for(report))
 
     console = Console()
@@ -468,8 +496,21 @@ def reconcile_cmd(
             a = f.allocation
             t.add_row(a.allocation_id, a.resource_id, a.escrow_uid, a.state)
         console.print(t)
-        console.print(
-            "[dim]Report-only. Investigate, then release via the resource "
-            "patch path (set resource available) to free capacity.[/]"
-        )
+        if remediation is None:
+            console.print(
+                "[dim]Report-only. Re-run with --remediate to release these "
+                "stale holds (or investigate first).[/]"
+            )
+        else:
+            freed = sum(1 for r in remediation if r.get("released"))
+            failed = len(remediation) - freed
+            console.print(
+                f"[green]Remediated: released {freed}[/]"
+                + (f", [red]{failed} failed[/]" if failed else "")
+            )
+            for r in remediation:
+                if not r.get("released"):
+                    console.print(
+                        f"  [red]✗[/] {r['allocation_id']} ({r['resource_id']}): {r.get('error')}"
+                    )
     raise typer.Exit(exit_code_for(report))

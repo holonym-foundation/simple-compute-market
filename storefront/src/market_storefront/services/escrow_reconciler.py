@@ -228,3 +228,29 @@ async def reconcile_db(
             status = EscrowStatus.UNREADABLE
         findings.append(Finding(alloc, status, classify(alloc, status)))
     return ReconcileReport(tuple(findings))
+
+
+# --------------------------------------------------------------------------
+# Remediation — release stale holds (free the capacity). ONLY STALE_HOLD
+# findings are released; never UNKNOWN (inconclusive — releasing there could
+# free a still-paid lease) or OK. release_fn is injected (the SQLiteClient's
+# apply_resource_transition in the CLI) and must be idempotent. A per-allocation
+# failure is recorded and the loop continues — one bad release never blocks the
+# rest.
+# --------------------------------------------------------------------------
+async def remediate_stale_holds(
+    report: ReconcileReport,
+    release_fn: Callable[[HeldAllocation], Any],
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for f in report.stale_holds:
+        a = f.allocation
+        entry: dict[str, Any] = {"allocation_id": a.allocation_id, "resource_id": a.resource_id}
+        try:
+            await release_fn(a)
+            entry["released"] = True
+        except Exception as exc:  # noqa: BLE001 — record + continue, never abort the batch
+            entry["released"] = False
+            entry["error"] = str(exc)
+        results.append(entry)
+    return results
