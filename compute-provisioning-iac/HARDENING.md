@@ -7,17 +7,30 @@ deps, run a server on their allotted resources, break their own agent), but must
 never be able to touch **another tenant, the host, or AEX's keys/network reputation**.
 
 The `container-management` role applies the **per-container** controls
-(`cap_drop: ALL`, non-root `user`, `read_only` rootfs + tmpfs, `no-new-privileges`,
-mem/cpu/pids caps, per-tenant named home volume). The controls below are
-**daemon/host-level** — they are NOT settable per container and MUST be configured
-on every provider host (aex-native-scm and any `-01/02/03` scale-out).
+(`read_only` rootfs + **exec** tmpfs, `no-new-privileges`, mem/cpu/pids caps,
+per-tenant named home volume; `cap_drop: ALL` + the minimal caps the runtime needs
+to drop privileges — see note). The controls below are **daemon/host-level** — NOT
+settable per container and MUST be configured on every provider host (aex-native-scm
+and any `-01/02/03` scale-out).
+
+> **Why not a forced non-root `--user`:** the AEX agent base runs **s6-overlay as
+> PID 1**, which must start as root to set up `/run` and then drop to its own
+> `hermes` user (UID 10000). Forcing `--user 10000` makes s6 fail. Container-root
+> is safe here because of `userns-remap` (§1), and the agent process ends up as
+> hermes after s6's drop. The role therefore leaves `container_user` empty,
+> `cap_drop: ALL` + `cap_add: [CHOWN,SETUID,SETGID,DAC_OVERRIDE,FOWNER]` (the caps
+> s6 needs to chown /run + drop privileges; shed afterward), and tmpfs `/run`,`/tmp`
+> with **exec** (Docker's default tmpfs is `noexec`; s6 execs from `/run`).
+> Verified 2026-06 against `ghcr.io/holonym-foundation/aex-agent-base`.
 
 ## 1. user-namespace remap (the primary cross-tenant defense)
 Without this, container-root == host-root, so a container escape reads **every
 tenant's home volume** off `/var/lib/docker/volumes`. With it, container-root maps
-to an unprivileged host UID — and the per-tenant non-root `user` (10001 by default)
-means a tenant's files on disk are owned by a UID a sibling cannot read even after
-an escape.
+to an unprivileged, **per-tenant-distinct** host UID — so a tenant's files on disk
+(and the agent's `hermes`-owned state) are owned by a host UID a sibling cannot
+read even after a container escape. This — not a forced `--user` — is what gives
+the cross-tenant guarantee (the runtime starts s6 as container-root then drops to
+hermes internally; see the note above).
 
 `/etc/docker/daemon.json`:
 ```json
@@ -59,6 +72,27 @@ iptables-save > /etc/iptables/rules.v4   # persist (iptables-persistent)
 Verify after applying: a fresh container can still reach the internet + chain RPC
 but **cannot** reach `169.254.169.254`. **Applied + verified on aex-native-scm
 (167.233.97.235) 2026-06.**
+
+## 3b. Inter-container isolation (no sibling↔sibling)
+Tenants share the host's default `docker0` bridge, and Docker's inter-container
+communication (ICC) is **on by default** — so tenant A can reach tenant B's
+container over the network (scan ports, hit B's agent's listeners, exploit/extract
+from any service B runs). userns-remap protects the *volume*, not network
+reachability. Close it:
+```json
+// /etc/docker/daemon.json
+{ "icc": false }
+```
+Restart docker, then belt-and-suspenders in `DOCKER-USER` (safe because tenant
+DNS resolves via EXTERNAL resolvers, not the bridge gateway, and egress packets
+are dst=external so they don't match):
+```
+iptables -I DOCKER-USER -s 172.17.0.0/16 -d 172.17.0.0/16 -j DROP   # block container<->container
+```
+Verify: two test containers — B cannot reach A's published port, but both still
+reach the internet + chain RPC. **Applied + verified on aex-native-scm 2026-06.**
+End-state (future): controlled, platform-rate-limited, *paid* inbound to a
+container (per-tenant ingress), not the open shared bridge.
 
 ## 4. Per-tenant disk quota
 The home volume must be quota-capped (project quota on the volumes filesystem, or a

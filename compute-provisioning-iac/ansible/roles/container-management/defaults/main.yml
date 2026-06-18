@@ -50,19 +50,26 @@ container_home_path: "/opt/data"
 # rate-limit/monitoring, and a per-tenant disk quota.
 container_read_only_rootfs: true            # immutable rootfs; writable state -> home volume + tmpfs
 container_no_new_privileges: true
-# Run as a fixed non-root UID:GID. With userns-remap this maps to an
-# unprivileged (and per-tenant-distinct) host UID, so even root-in-container
-# cannot read a sibling's home volume off the host. MUST be the UID the base
-# image ships + owns container_home_path: the AEX agent base inherits Hermes's
-# `hermes` user (UID 10000, owns /opt/data).
-container_user: "10000:10000"
-# Drop ALL Linux capabilities, add back only what an agent legitimately needs
-# (none by default). Blocks the bulk of escape / host-tamper vectors.
+# DO NOT force a non-root --user. The AEX agent base runs s6-overlay as PID 1,
+# which MUST start as root to set up /run + drop privileges to its own `hermes`
+# user (UID 10000) internally. Forcing --user 10000 makes s6 fail ("/run belongs
+# to uid 0 … lacking privileges to fix it"). Container-root is safe here because
+# the host runs `userns-remap` (container-root maps to an unprivileged, per-tenant
+# host UID — see HARDENING.md), and the agent process itself ends up as hermes
+# after s6's privilege drop. Empty = run as the image's default (root-in-container).
+# [Verified 2026-06: AEX image boots read-only/cap-dropped only as root-start.]
+container_user: ""
+# Drop ALL caps, then add back the MINIMAL set s6-overlay needs to chown /run and
+# drop to the hermes user at boot (verified: without these, s6-applyuidgid fails
+# "unable to set supplementary group list"). These are shed after the privilege
+# drop — the agent runs capless — and are bounded by userns-remap regardless.
 container_cap_drop: ["ALL"]
-container_cap_add: []
-# Writable ephemeral paths when the rootfs is read-only. Tenant PERSISTENT state
-# (keys, KB, data, config) belongs in the home volume, never tmpfs.
-container_tmpfs: ["/tmp", "/run"]
+container_cap_add: ["CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER"]
+# Writable ephemeral paths under the read-only rootfs. /run + /tmp need `exec`:
+# Docker's default tmpfs is `noexec`, but s6 copies its supervision tree to /run
+# and EXECS it ("exec /run/s6/…/init: Permission denied" without exec). Tenant
+# PERSISTENT state (keys, KB, data) belongs in the home volume, never tmpfs.
+container_tmpfs: ["/tmp:exec", "/run:exec"]
 
 # Teardown: destroy removes the home volume; lease_end keeps it (resume/reclaim).
 container_remove_volume: true
