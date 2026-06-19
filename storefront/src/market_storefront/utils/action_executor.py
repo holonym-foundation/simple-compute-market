@@ -175,6 +175,8 @@ async def _do_provision(
     vm_host: str,
     vm_target: str,
     virtualization_type: str = "vm",
+    container_image: str | None = None,
+    container_env: dict | None = None,
     on_job_submitted: Callable[[str], Awaitable[None]] | None = None,
 ) -> dict:
     """Submit a create job to the provisioning service and return the result.
@@ -195,8 +197,16 @@ async def _do_provision(
     )
     async with client:
         if virtualization_type == "container":
+            # Forward an optional per-tenant image + env (the provisioning model +
+            # container-management role already honor both). container_env carries the
+            # buyer's ship payload (AEX SOUL/recipe + inference creds); see the caller.
+            _req: dict = {"container_target": vm_target}
+            if container_image:
+                _req["container_image"] = container_image
+            if container_env:
+                _req["container_env"] = container_env
             submit = await client.create_container(
-                vm_host, CreateContainerRequest(container_target=vm_target)
+                vm_host, CreateContainerRequest(**_req)
             )
             if on_job_submitted is not None:
                 try:
@@ -807,13 +817,20 @@ async def fulfill_compute_obligation(
                 provisioning_job_id=job_id,
             )
 
+        _attrs = reserved.get("attributes") or {}
+        # container_image is resource-level (the listing's image). container_env is the
+        # buyer's per-deal ship payload (AEX SOUL/recipe + inference creds): the buyer
+        # attaches it to the order and it flows here via the allocation attributes.
+        # TODO(passthrough): wire the buyer→order channel (aex-fleet attaches
+        # buildAgentDeployEnv() to the buy) so `container_env` is populated per deal.
+        _container_env = _attrs.get("container_env") if isinstance(_attrs.get("container_env"), dict) else None
         provision_result = await _do_provision(
             ssh_public_key,
             vm_host=reserved_vm_host,
             vm_target=vm_target,
-            virtualization_type=str(
-                (reserved.get("attributes") or {}).get("virtualization_type") or "vm"
-            ),
+            virtualization_type=str(_attrs.get("virtualization_type") or "vm"),
+            container_image=_attrs.get("container_image") or None,
+            container_env=_container_env,
             on_job_submitted=_record_job_id,
         )
         # Split credentials out before serialising — passwords must never touch on-chain data.
