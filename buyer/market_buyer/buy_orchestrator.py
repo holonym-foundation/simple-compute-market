@@ -339,6 +339,39 @@ def _looks_like_propagation_lag(exc: RuntimeError) -> bool:
     return any(hint in msg for hint in _PROPAGATION_LAG_HINTS)
 
 
+def _resolve_seller_wallet_from_registry(seller_url: str, timeout: float = 5.0) -> Optional[str]:
+    """Fallback: resolve the seller wallet from the registry publisher identity when
+    the negotiation's accepted proposal carries no recipient (and the storefront does
+    not serve /.well-known/agent-wallet.json). Matches the publisher whose
+    ``storefront_url`` == ``seller_url`` and returns its eip191 identifier.
+    Best-effort: returns None on any failure. (Ported from the app-box hotfix.)"""
+    try:
+        from service.config_loader import load_user_config, get_dotted
+        cfg = load_user_config() or {}
+        registry_urls = get_dotted(cfg, "registry.urls") or []
+    except Exception:
+        registry_urls = []
+    if isinstance(registry_urls, str):
+        registry_urls = [registry_urls]
+    target = seller_url.rstrip("/")
+    for reg in registry_urls:
+        try:
+            with urllib.request.urlopen(reg.rstrip("/") + "/publishers", timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            continue
+        items = data.get("items") if isinstance(data, dict) else data
+        for p in (items or []):
+            if (p.get("storefront_url") or "").rstrip("/") != target:
+                continue
+            for ident in (p.get("identities") or []):
+                if ident.get("scheme") == "eip191":
+                    addr = ident.get("identifier") or ""
+                    if addr.startswith("0x") and len(addr) == 42:
+                        return addr
+    return None
+
+
 def container_env_from_environ() -> dict[str, str] | None:
     """Per-deal container env for the seller, read from AEX_CONTAINER_ENV_JSON (set by
     the deploy driver, e.g. aex-fleet, when it shells `market buy`). Opaque to the
@@ -859,7 +892,8 @@ def _settle_one(
             attempts=attempts,
         )
 
-    escrow_recipient = accepted_recipient_address(accepted_proposal)
+    escrow_recipient = accepted_recipient_address(accepted_proposal) \
+        or _resolve_seller_wallet_from_registry(seller_url)
 
     terms = AgreedTerms(
         seller_url=seller_url,
