@@ -70,6 +70,7 @@ async def start_settlement_job(
     escrow_uid: str,
     negotiation_id: str,
     ssh_public_key: str,
+    container_env: dict[str, str] | None = None,
     sqlite_client: Any,
     alkahest_client: Any,
     chain_name: str,
@@ -131,6 +132,7 @@ async def start_settlement_job(
         duration_seconds=_resolve_duration_seconds(thread, our_order_dict),
         ssh_public_key=ssh_public_key,
         compute_resource=_resolve_compute_resource(our_order_dict),
+        container_env=container_env,
     )
 
     # Re-type the persisted proposal off the thread. The buyer published
@@ -234,6 +236,7 @@ async def _run_settlement_job_bg(
             client=alkahest_client,
             escrow_uid=escrow_uid,
             ssh_public_key=provision.ssh_public_key,
+            container_env=provision.container_env,
             oracle_address=settings.wallet.address,
             order=order_dict,
             duration_seconds=provision.duration_seconds,

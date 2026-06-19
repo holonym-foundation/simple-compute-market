@@ -175,6 +175,8 @@ async def _do_provision(
     vm_host: str,
     vm_target: str,
     virtualization_type: str = "vm",
+    container_image: str | None = None,
+    container_env: dict | None = None,
     on_job_submitted: Callable[[str], Awaitable[None]] | None = None,
 ) -> dict:
     """Submit a create job to the provisioning service and return the result.
@@ -195,8 +197,16 @@ async def _do_provision(
     )
     async with client:
         if virtualization_type == "container":
+            # Forward an optional per-tenant image + env (the provisioning model +
+            # container-management role already honor both). container_env carries the
+            # buyer's ship payload (AEX SOUL/recipe + inference creds); see the caller.
+            _req: dict = {"container_target": vm_target}
+            if container_image:
+                _req["container_image"] = container_image
+            if container_env:
+                _req["container_env"] = container_env
             submit = await client.create_container(
-                vm_host, CreateContainerRequest(container_target=vm_target)
+                vm_host, CreateContainerRequest(**_req)
             )
             if on_job_submitted is not None:
                 try:
@@ -684,6 +694,7 @@ async def fulfill_compute_obligation(
     client: AlkahestClient | None,
     escrow_uid: str,
     ssh_public_key: str,
+    container_env: dict | None = None,
     oracle_address: str | None = None,
     order: str | dict | None = None,
     duration_seconds: int = 3600,
@@ -807,13 +818,19 @@ async def fulfill_compute_obligation(
                 provisioning_job_id=job_id,
             )
 
+        _attrs = reserved.get("attributes") or {}
+        # container_image is resource-level (the listing's image, from the offer attrs).
+        # container_env is the buyer's PER-DEAL ship payload (AEX SOUL/recipe + inference
+        # creds), carried in ProvisionTerms via the settle request → start_settlement_job →
+        # here (the `container_env` arg) — the same path ssh_public_key takes. (NOT the
+        # resource attrs, which are shared across every deal on the listing.)
         provision_result = await _do_provision(
             ssh_public_key,
             vm_host=reserved_vm_host,
             vm_target=vm_target,
-            virtualization_type=str(
-                (reserved.get("attributes") or {}).get("virtualization_type") or "vm"
-            ),
+            virtualization_type=str(_attrs.get("virtualization_type") or "vm"),
+            container_image=_attrs.get("container_image") or None,
+            container_env=container_env or None,
             on_job_submitted=_record_job_id,
         )
         # Split credentials out before serialising — passwords must never touch on-chain data.

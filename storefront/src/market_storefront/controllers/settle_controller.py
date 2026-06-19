@@ -73,6 +73,7 @@ class SettleController:
                 escrow_uid=escrow_uid,
                 negotiation_id=body.negotiation_id,
                 ssh_public_key=body.ssh_public_key,
+                container_env=body.container_env,
                 sqlite_client=self._db,
                 alkahest_client=alkahest,
                 chain_name=body.chain_name,
