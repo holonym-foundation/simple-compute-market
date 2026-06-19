@@ -10,6 +10,14 @@ class SettleRequest(BaseModel):
     negotiation_id: str
     ssh_public_key: str
     buyer_address: str
+    container_env: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Optional per-deal environment for a container tenant — the buyer's "
+            "opaque ship payload (e.g. AEX SOUL/recipe + inference creds). Forwarded "
+            "verbatim to the container at provision; ignored for non-container deals."
+        ),
+    )
     chain_name: str = Field(
         description=(
             "Chain name from the accepted escrow proposal — the storefront "

@@ -694,6 +694,7 @@ async def fulfill_compute_obligation(
     client: AlkahestClient | None,
     escrow_uid: str,
     ssh_public_key: str,
+    container_env: dict | None = None,
     oracle_address: str | None = None,
     order: str | dict | None = None,
     duration_seconds: int = 3600,
@@ -818,19 +819,18 @@ async def fulfill_compute_obligation(
             )
 
         _attrs = reserved.get("attributes") or {}
-        # container_image is resource-level (the listing's image). container_env is the
-        # buyer's per-deal ship payload (AEX SOUL/recipe + inference creds): the buyer
-        # attaches it to the order and it flows here via the allocation attributes.
-        # TODO(passthrough): wire the buyer→order channel (aex-fleet attaches
-        # buildAgentDeployEnv() to the buy) so `container_env` is populated per deal.
-        _container_env = _attrs.get("container_env") if isinstance(_attrs.get("container_env"), dict) else None
+        # container_image is resource-level (the listing's image, from the offer attrs).
+        # container_env is the buyer's PER-DEAL ship payload (AEX SOUL/recipe + inference
+        # creds), carried in ProvisionTerms via the settle request → start_settlement_job →
+        # here (the `container_env` arg) — the same path ssh_public_key takes. (NOT the
+        # resource attrs, which are shared across every deal on the listing.)
         provision_result = await _do_provision(
             ssh_public_key,
             vm_host=reserved_vm_host,
             vm_target=vm_target,
             virtualization_type=str(_attrs.get("virtualization_type") or "vm"),
             container_image=_attrs.get("container_image") or None,
-            container_env=_container_env,
+            container_env=container_env or None,
             on_job_submitted=_record_job_id,
         )
         # Split credentials out before serialising — passwords must never touch on-chain data.

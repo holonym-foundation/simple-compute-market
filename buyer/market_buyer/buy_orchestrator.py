@@ -339,6 +339,21 @@ def _looks_like_propagation_lag(exc: RuntimeError) -> bool:
     return any(hint in msg for hint in _PROPAGATION_LAG_HINTS)
 
 
+def container_env_from_environ() -> dict[str, str] | None:
+    """Per-deal container env for the seller, read from AEX_CONTAINER_ENV_JSON (set by
+    the deploy driver, e.g. aex-fleet, when it shells `market buy`). Opaque to the
+    market; the seller forwards it to the container at provision. None if unset/invalid."""
+    import os
+    raw = os.environ.get("AEX_CONTAINER_ENV_JSON")
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return None
+    return {str(k): str(v) for k, v in parsed.items()} if isinstance(parsed, dict) else None
+
+
 def submit_settlement(
     *,
     seller_url: str,
@@ -348,6 +363,7 @@ def submit_settlement(
     buyer_address: str,
     buyer_private_key: str,
     chain_name: str,
+    container_env: dict[str, str] | None = None,
     timeout: float = DEFAULT_HTTP_TIMEOUT,
     max_attempts: int = 6,
     retry_backoff: float = 3.0,
@@ -372,6 +388,10 @@ def submit_settlement(
         "buyer_address": buyer_address,
         "chain_name": chain_name,
     }
+    if container_env:
+        # Per-deal ship payload for a container tenant (opaque to the market) — the
+        # seller forwards it to the container at provision. See ProvisionTerms.container_env.
+        body["container_env"] = container_env
     last_exc: RuntimeError | None = None
     for attempt in range(1, max_attempts + 1):
         sig, ts = _sign(f"settle_escrow:{escrow_uid}", buyer_private_key)
@@ -959,6 +979,7 @@ def _settle_one(
         buyer_address=config.buyer_address,
         buyer_private_key=config.buyer_private_key,
         chain_name=accepted_proposal.chain_name,
+        container_env=container_env_from_environ(),
     )
     on_event("settlement_submitted", {"escrow_uid": escrow_uid})
 

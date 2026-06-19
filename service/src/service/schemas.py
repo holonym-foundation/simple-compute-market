@@ -217,6 +217,15 @@ class ProvisionTerms(BaseModel):
             "and persisted on the negotiation thread."
         ),
     )
+    container_env: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Per-deal environment for a container tenant — the buyer's opaque "
+            "ship payload (e.g. AEX's SOUL/recipe + inference creds). The seller "
+            "forwards it verbatim to the container at provision; non-container "
+            "deals ignore it. Sellers opt in to honoring buyer-supplied env."
+        ),
+    )
 
 
 class EscrowTerms(BaseModel):

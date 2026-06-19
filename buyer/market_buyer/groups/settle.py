@@ -22,6 +22,7 @@ from rich.table import Table
 
 from ..buy_orchestrator import (
     AgreedTerms,
+    container_env_from_environ,
     DEFAULT_SETTLEMENT_POLL_INTERVAL,
     DEFAULT_SETTLEMENT_TIMEOUT,
     submit_settlement,
@@ -294,6 +295,7 @@ def run_settle_from_log(
             buyer_address=chain.buyer_address,
             buyer_private_key=chain.buyer_private_key,
             chain_name=chain.chain_name,
+            container_env=container_env_from_environ(),
         )
     except RuntimeError as exc:
         log.event("settle_submit_failed", error=str(exc))
