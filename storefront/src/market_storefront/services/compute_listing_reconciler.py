@@ -188,6 +188,59 @@ def available_compute_slices(db_path: str) -> list[dict[str, Any]]:
                         row["max_duration_seconds"] if has_max_duration else None
                     ),
                 })
+
+        # Container resources (#14) are direct slot pools: a resource with
+        # value=N admits N concurrent leases (1 slot per lease — the buyer's
+        # demand gpu_count is 0). They don't live in the GPU pool tables, so the
+        # branches above (compute.gpu only) miss them — which made
+        # close_stale_compute_listings_after_capacity_change treat every open
+        # container listing as "stale" and close it after the first lease. Query
+        # them directly so a container listing stays in the available set while
+        # ANY slot is free, and drops out only when the resource is full (so
+        # stale-close then correctly closes it). We emit a SINGLE gpus:1 slice
+        # (matching listing_resource_key(rid, gpu_count or 1)) rather than one
+        # per slot, since containers reserve one slot regardless of gpu_count.
+        ccols = {r[1] for r in conn.execute("PRAGMA table_info(resources)").fetchall()}
+        cextra = ""
+        if "accepted_escrows" in ccols:
+            cextra += ", accepted_escrows"
+        if "max_duration_seconds" in ccols:
+            cextra += ", max_duration_seconds"
+        crows = conn.execute(
+            f"""SELECT resource_id, value, attributes, min_price, token{cextra}
+               FROM resources
+               WHERE resource_type = 'compute.container' AND state = 'available'
+               ORDER BY resource_id""",
+        ).fetchall()
+        for crow in crows:
+            try:
+                cattrs = json.loads(crow["attributes"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                cattrs = {}
+            total_slots = int(crow["value"]) if crow["value"] is not None else 1
+            avail_slots = max(
+                0,
+                total_slots - held_by_resource.get(str(crow["resource_id"]), 0),
+            )
+            pool_rows.append({
+                "pool_id": str(cattrs.get("pool_id") or crow["resource_id"]),
+                "single_resource_id": str(crow["resource_id"]),
+                "gpu_model": cattrs.get("gpu_model"),
+                "region": cattrs.get("region"),
+                "sla": cattrs.get("sla", 0.0),
+                "total_gpu_count": total_slots,
+                "available_gpu_count": avail_slots,
+                # one gpus:1 slice while any slot is free; none when full.
+                "max_member_available_gpu_count": 1 if avail_slots >= 1 else 0,
+                "min_price": crow["min_price"],
+                "token": crow["token"],
+                "accepted_escrows": (
+                    crow["accepted_escrows"] if "accepted_escrows" in ccols else None
+                ),
+                "max_duration_seconds": (
+                    crow["max_duration_seconds"] if "max_duration_seconds" in ccols else None
+                ),
+            })
     finally:
         conn.close()
 
