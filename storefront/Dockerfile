@@ -1,8 +1,10 @@
 # --platform=linux/amd64 is intentional: production targets Linux x86_64.
 # Keep this pin in all FROM lines.
 
-# Stage 1: Install Python dependencies using uv
-FROM --platform=linux/amd64 ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+# Stage 1: Install Python dependencies using uv. Keep the readable tag, but
+# resolve it through the reviewed multi-platform index digest so a later tag
+# update cannot silently change either build stage.
+FROM --platform=linux/amd64 ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58 AS builder
 
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
@@ -52,7 +54,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     fi
 
 # Stage 2: Lean runtime image
-FROM --platform=linux/amd64 ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS runtime
+FROM --platform=linux/amd64 ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58 AS runtime
 
 USER root
 
