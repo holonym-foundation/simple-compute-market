@@ -1,5 +1,5 @@
 # --platform=linux/amd64 is intentional: production targets Linux x86_64.
-# Keep this pin in all FROM lines.
+# Keep this pin in every external-image FROM line.
 
 # Stage 1: Install Python dependencies using uv. Keep the readable tag, but
 # resolve it through the reviewed multi-platform index digest so a later tag
@@ -53,30 +53,19 @@ RUN --mount=type=cache,target=/root/.cache/uv \
             --refresh-package provisioning-service; \
     fi
 
-# Stage 2: Lean runtime image
-FROM --platform=linux/amd64 ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58 AS runtime
+# Stage 2: Common runtime. The inert target deliberately branches before the
+# active-only ZeroTier/sudo layer below, so its image cannot contain those
+# authority-bearing tools even if a later runtime configuration is wrong.
+FROM --platform=linux/amd64 ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58 AS runtime-base
 
 USER root
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl gnupg iproute2 kmod sudo git && \
-    curl -s https://install.zerotier.com | bash && \
-    rm -rf /var/lib/apt/lists/* && \
-    mkdir -p /var/lib/zerotier-one && \
-    printf '{\n  "settings": {\n    "allowManagementFrom": [ "127.0.0.1", "::1" ]\n  }\n}\n' \
-      > /var/lib/zerotier-one/local.conf && \
-    rm -f /var/lib/zerotier-one/identity.public /var/lib/zerotier-one/identity.secret && \
-    useradd -m -s /bin/sh appuser && \
-    echo 'appuser ALL=(root) NOPASSWD: /usr/sbin/zerotier-one, /usr/sbin/zerotier-cli' \
-      > /etc/sudoers.d/appuser && \
-    chmod 0440 /etc/sudoers.d/appuser && \
+RUN useradd -m -s /bin/sh appuser && \
     mkdir -p /app && \
     chown appuser /app
 
 USER appuser
 WORKDIR /app
-
-EXPOSE 9993/udp
 
 COPY --chown=appuser:appuser --from=builder /app/.venv ./.venv
 ENV PATH="/app/.venv/bin:$PATH"
@@ -129,4 +118,33 @@ RUN chmod +x ./entrypoint.sh
 ARG MODEL_VERSION=""
 ENV MODEL_VERSION=${MODEL_VERSION}
 
+# This is the only target permitted for an inert rehearsal. It contains no
+# ZeroTier daemon/CLI, no sudo binary or sudoers grant, and no ZeroTier UDP
+# exposure. The application still independently enforces the inert route and
+# startup boundaries.
+FROM runtime-base AS inert-runtime
+ENV STOREFRONT_ACTIVATION_MODE=inert
+USER appuser
 CMD ["./entrypoint.sh"]
+
+# Preserve the historical active image as the default final target. This layer
+# remains isolated from inert-runtime and is therefore never built into the
+# rehearsal artifact selected with --target inert-runtime.
+FROM runtime-base AS active-runtime
+USER root
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl gnupg iproute2 kmod sudo git && \
+    curl -s https://install.zerotier.com | bash && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /var/lib/zerotier-one && \
+    printf '{\n  "settings": {\n    "allowManagementFrom": [ "127.0.0.1", "::1" ]\n  }\n}\n' \
+      > /var/lib/zerotier-one/local.conf && \
+    rm -f /var/lib/zerotier-one/identity.public /var/lib/zerotier-one/identity.secret && \
+    echo 'appuser ALL=(root) NOPASSWD: /usr/sbin/zerotier-one, /usr/sbin/zerotier-cli' \
+      > /etc/sudoers.d/appuser && \
+    chmod 0440 /etc/sudoers.d/appuser
+USER appuser
+EXPOSE 9993/udp
+CMD ["./entrypoint.sh"]
+
+FROM active-runtime AS runtime

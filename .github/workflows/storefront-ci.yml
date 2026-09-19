@@ -68,3 +68,21 @@ jobs:
       - name: Test storefront
         working-directory: storefront
         run: uv run pytest tests/unit tests/integration -q
+
+      - name: Build and inspect inert storefront artifact
+        run: |
+          DOCKER_BUILDKIT=1 docker build \
+            --target inert-runtime \
+            --tag scm-storefront-inert:${GITHUB_SHA} \
+            --file storefront/Dockerfile \
+            .
+          docker run --rm \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,size=32m,uid=1000,gid=1000,mode=1777 \
+            --env HOME=/tmp \
+            --entrypoint /bin/sh \
+            scm-storefront-inert:${GITHUB_SHA} \
+            -ceu 'test "$STOREFRONT_ACTIVATION_MODE" = inert; ! command -v sudo; ! command -v zerotier-one; ! command -v zerotier-cli; python3 -c "from market_storefront.utils.config import ACTIVATION_MODE; assert ACTIVATION_MODE == '\''inert'\''"'
