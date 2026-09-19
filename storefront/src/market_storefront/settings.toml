@@ -14,6 +14,12 @@
 agent_id        = ""        # must be a Python identifier; empty → "root_agent"
 agent_name      = ""        # display name; falls back to agent_id
 
+# Runtime authority boundary. "active" preserves the normal seller. "inert"
+# starts only enough of the process to prove local health and approved private
+# dependency reachability; it never constructs a signer/chain client, starts
+# negotiation watchdogs, or permits seller/buyer action routes.
+activation_mode = "active"  # "active" | "inert"
+
 # HTTP server
 port            = 8000
 base_url        = "http://localhost:8000"  # advertised on-chain; may contain ${zerotier} placeholder

@@ -11,9 +11,9 @@ import asyncio
 import logging
 
 from market_storefront.utils.config import (
+    BASE_URL_OVERRIDE,
     CHAINS,
     settings,
-    BASE_URL_OVERRIDE,
 )
 from market_storefront.utils.logging_config import setup_file_logging
 
@@ -22,6 +22,7 @@ setup_file_logging(settings.log_file_path or None, settings.log_level)
 logger = logging.getLogger(__name__)
 
 ALERTS_USER_ID = "resource-monitor"
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
 async def _probe_chain_addresses() -> None:
@@ -156,17 +157,21 @@ def _maybe_join_zerotier_network() -> None:
 
 async def _startup_tasks():
     """Initialize background tasks. Called from server.py lifespan."""
-    from market_storefront.negotiation_watchdog import watchdog_loop as _neg_watchdog_loop
+    from market_storefront.server import is_inert_mode
 
-    _maybe_join_zerotier_network()
+    inert = is_inert_mode()
+    if not inert:
+        _maybe_join_zerotier_network()
 
     # Initialize the global NegotiationThreadStore so any subsequent
     # request handler can call NegotiationThreadTransaction (which
     # reaches into get_thread_store() with no args). Must run before
     # any request can hit /api/v1/negotiate/*.
-    import market_storefront.container as _container
     from market_policy.identity import Identity
     from market_policy.negotiation_thread import get_thread_store
+
+    import market_storefront.container as _container
+
     _agent_url = BASE_URL_OVERRIDE or f"http://localhost:{settings.port}"
     get_thread_store(
         sqlite_client=_container.resolved_sqlite_client,
@@ -200,16 +205,28 @@ async def _startup_tasks():
         logger.error("[STARTUP] Resource seeding failed: %s", exc)
         raise
 
-    # Probe each chain's configured alkahest addresses for bytecode.
-    await _probe_chain_addresses()
+    if inert:
+        logger.warning(
+            "[STARTUP] Inert activation mode: chain probes and negotiation "
+            "watchdog are disabled"
+        )
+    else:
+        # Probe each chain's configured alkahest addresses for bytecode.
+        await _probe_chain_addresses()
 
-    # Start negotiation watchdog (marks stale threads as abandoned)
-    asyncio.create_task(_neg_watchdog_loop())
-    logger.info(
-        "[STARTUP] Negotiation watchdog started (interval=%ds, timeout=%ds)",
-        settings.negotiation_watchdog_interval,
-        settings.negotiation_timeout_seconds,
-    )
+        # Start negotiation watchdog (marks stale threads as abandoned)
+        from market_storefront.negotiation_watchdog import (
+            watchdog_loop as _neg_watchdog_loop,
+        )
+
+        watchdog_task = asyncio.create_task(_neg_watchdog_loop())
+        _BACKGROUND_TASKS.add(watchdog_task)
+        watchdog_task.add_done_callback(_BACKGROUND_TASKS.discard)
+        logger.info(
+            "[STARTUP] Negotiation watchdog started (interval=%ds, timeout=%ds)",
+            settings.negotiation_watchdog_interval,
+            settings.negotiation_timeout_seconds,
+        )
 
     # Preflight: block startup until the provisioning service is reachable.
     # Crashes the process on timeout if [seller.provisioning].fail_on_unreachable
