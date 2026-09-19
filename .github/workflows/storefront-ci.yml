@@ -38,9 +38,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
+      - uses: foundry-rs/foundry-toolchain@v1
         with:
-          node-version: "24"
+          version: v1.5.1
 
       - uses: astral-sh/setup-uv@v4
         with:
