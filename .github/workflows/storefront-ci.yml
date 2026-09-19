@@ -1,0 +1,61 @@
+name: Storefront CI
+
+on:
+  pull_request:
+    paths:
+      - "storefront/**"
+      - "service/**"
+      - "policy/**"
+      - "provisioning-service/**"
+      - "storefront-client/**"
+      - "registry-client/**"
+      - ".github/workflows/storefront-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "storefront/**"
+      - "service/**"
+      - "policy/**"
+      - "provisioning-service/**"
+      - "storefront-client/**"
+      - "registry-client/**"
+      - ".github/workflows/storefront-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: storefront-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.8.13"
+          enable-cache: true
+          cache-dependency-glob: storefront/uv.lock
+
+      - name: Build internal dependency wheels
+        run: make dist-service dist-policy dist-provisioning dist-storefront-client dist-registry
+
+      - name: Install locked storefront environment
+        working-directory: storefront
+        run: uv sync --locked --extra lint --find-links ../.dist
+
+      - name: Lint storefront
+        working-directory: storefront
+        run: uv run ruff check src tests
+
+      - name: Test storefront
+        working-directory: storefront
+        run: uv run pytest tests/unit tests/integration -q
