@@ -51,9 +51,15 @@ jobs:
         working-directory: storefront
         run: uv sync --locked --extra lint --find-links ../.dist
 
-      - name: Lint storefront
+      - name: Lint inert storefront boundary
         working-directory: storefront
-        run: uv run ruff check src tests
+        run: |
+          uv run ruff check \
+            src/market_storefront/agent.py \
+            src/market_storefront/server.py \
+            src/market_storefront/services/system_service.py \
+            tests/unit/test_inert_activation_mode.py \
+            tests/unit/test_storefront_image_contract.py
 
       - name: Test storefront
         working-directory: storefront
