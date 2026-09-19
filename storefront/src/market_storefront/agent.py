@@ -160,8 +160,17 @@ async def _startup_tasks():
     from market_storefront.server import is_inert_mode
 
     inert = is_inert_mode()
-    if not inert:
-        _maybe_join_zerotier_network()
+    if inert:
+        logger.warning(
+            "[STARTUP] Inert activation mode: ZeroTier, negotiation state, "
+            "resource seeding, chain probes, and background tasks are disabled"
+        )
+        # This is the only startup dependency probe permitted in inert mode.
+        # It is a bounded health read and never invokes a provisioning action.
+        await _preflight_provisioning()
+        return
+
+    _maybe_join_zerotier_network()
 
     # Initialize the global NegotiationThreadStore so any subsequent
     # request handler can call NegotiationThreadTransaction (which
@@ -205,28 +214,22 @@ async def _startup_tasks():
         logger.error("[STARTUP] Resource seeding failed: %s", exc)
         raise
 
-    if inert:
-        logger.warning(
-            "[STARTUP] Inert activation mode: chain probes and negotiation "
-            "watchdog are disabled"
-        )
-    else:
-        # Probe each chain's configured alkahest addresses for bytecode.
-        await _probe_chain_addresses()
+    # Probe each chain's configured alkahest addresses for bytecode.
+    await _probe_chain_addresses()
 
-        # Start negotiation watchdog (marks stale threads as abandoned)
-        from market_storefront.negotiation_watchdog import (
-            watchdog_loop as _neg_watchdog_loop,
-        )
+    # Start negotiation watchdog (marks stale threads as abandoned)
+    from market_storefront.negotiation_watchdog import (
+        watchdog_loop as _neg_watchdog_loop,
+    )
 
-        watchdog_task = asyncio.create_task(_neg_watchdog_loop())
-        _BACKGROUND_TASKS.add(watchdog_task)
-        watchdog_task.add_done_callback(_BACKGROUND_TASKS.discard)
-        logger.info(
-            "[STARTUP] Negotiation watchdog started (interval=%ds, timeout=%ds)",
-            settings.negotiation_watchdog_interval,
-            settings.negotiation_timeout_seconds,
-        )
+    watchdog_task = asyncio.create_task(_neg_watchdog_loop())
+    _BACKGROUND_TASKS.add(watchdog_task)
+    watchdog_task.add_done_callback(_BACKGROUND_TASKS.discard)
+    logger.info(
+        "[STARTUP] Negotiation watchdog started (interval=%ds, timeout=%ds)",
+        settings.negotiation_watchdog_interval,
+        settings.negotiation_timeout_seconds,
+    )
 
     # Preflight: block startup until the provisioning service is reachable.
     # Crashes the process on timeout if [seller.provisioning].fail_on_unreachable

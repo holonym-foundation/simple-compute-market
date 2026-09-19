@@ -97,11 +97,18 @@ async def lifespan(_: FastAPI):
     else:
         alkahest_clients = alkahest_service.build_clients()
 
-    listing_svc = ListingService(
-        sqlite_client=sqlite_client,
-        alkahest_clients=alkahest_clients,
-    )
-    negotiation_svc = NegotiationService(sqlite_client=sqlite_client)
+    if is_inert_mode():
+        # The middleware denies every seller/buyer route in inert mode. Keep
+        # their service objects absent as a second boundary so a future route
+        # wiring mistake cannot inherit initialized action-capable services.
+        listing_svc = None
+        negotiation_svc = None
+    else:
+        listing_svc = ListingService(
+            sqlite_client=sqlite_client,
+            alkahest_clients=alkahest_clients,
+        )
+        negotiation_svc = NegotiationService(sqlite_client=sqlite_client)
     system_svc = SystemService(sqlite_client=sqlite_client, agent_id=AGENT_ID)
 
     _container.resolved_sqlite_client = sqlite_client

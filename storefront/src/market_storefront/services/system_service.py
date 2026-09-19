@@ -74,7 +74,9 @@ class SystemService:
             if storefront_config.ACTIVATION_MODE == "inert":
                 checks["registry_auth"] = await self.registry_auth_check()
                 checks["provisioning"] = await self.provisioning_check()
-            checks["negotiation_strategy"] = self.negotiation_strategy_check()
+                checks["negotiation_strategy"] = "disabled"
+            else:
+                checks["negotiation_strategy"] = self.negotiation_strategy_check()
 
         inert = storefront_config.ACTIVATION_MODE == "inert"
         if inert:

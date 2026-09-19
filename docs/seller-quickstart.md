@@ -101,8 +101,9 @@ Use `activation_mode = "inert"` only for a non-authoritative deployment
 rehearsal. In this mode the process initializes its local database and checks
 its configured private provisioning dependency plus an authenticated,
 read-only registry request, but it does not construct a signer or chain client,
-probe a chain RPC, start negotiation watchdogs, or permit seller/buyer action
-routes. Only these observation endpoints remain available:
+start or join ZeroTier, initialize negotiation state, seed resource inventory,
+probe a chain RPC, start negotiation watchdogs, or construct seller/buyer
+services. Only these observation endpoints remain available:
 
 - `GET /health`
 - `GET /api/v1/system/health`
@@ -113,6 +114,10 @@ authentication dependency runs, and the storefront cannot be resumed through
 the admin API. This is a safety boundary for staged infrastructure inspection,
 not a live seller configuration. Change to `active` only through the operator's
 normal reviewed deployment process.
+
+The inert status response reports the local resource count for inspection. A
+rehearsal must begin and remain at zero; inert mode never imports the mounted
+`resources.csv` automatically.
 
 ## 3. resources.csv
 

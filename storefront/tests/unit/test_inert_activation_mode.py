@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -127,9 +130,8 @@ async def test_inert_startup_skips_external_and_background_seams(monkeypatch):
     )
     monkeypatch.setattr(agent, "_probe_chain_addresses", probe_chain)
     monkeypatch.setattr(agent, "_preflight_provisioning", preflight)
-    monkeypatch.setattr(
-        "market_policy.negotiation_thread.get_thread_store", lambda **_: object()
-    )
+    thread_store = Mock(side_effect=AssertionError("negotiation state must not initialize"))
+    monkeypatch.setattr("market_policy.negotiation_thread.get_thread_store", thread_store)
     monkeypatch.setattr(
         container,
         "resolved_sqlite_client",
@@ -145,7 +147,8 @@ async def test_inert_startup_skips_external_and_background_seams(monkeypatch):
 
     probe_chain.assert_not_awaited()
     preflight.assert_awaited_once_with()
-    seed.assert_awaited_once()
+    seed.assert_not_awaited()
+    thread_store.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -164,16 +167,26 @@ async def test_inert_lifespan_never_constructs_signer_clients(monkeypatch):
             AssertionError("signer/chain clients must not be constructed")
         ),
     )
-    monkeypatch.setattr(listing_service, "ListingService", lambda **_: object())
-    monkeypatch.setattr(negotiation_service, "NegotiationService", lambda **_: object())
+    listing_constructor = Mock(side_effect=AssertionError("listing service must not initialize"))
+    negotiation_constructor = Mock(
+        side_effect=AssertionError("negotiation service must not initialize")
+    )
+    monkeypatch.setattr(listing_service, "ListingService", listing_constructor)
+    monkeypatch.setattr(
+        negotiation_service, "NegotiationService", negotiation_constructor
+    )
     monkeypatch.setattr(system_service, "SystemService", lambda **_: object())
     startup = AsyncMock()
     monkeypatch.setattr(agent, "_startup_tasks", startup)
 
     async with server.lifespan(server.app):
         assert container.resolved_alkahest_clients == {}
+        assert container.resolved_listing_service is None
+        assert container.resolved_negotiation_service is None
 
     startup.assert_awaited_once_with()
+    listing_constructor.assert_not_called()
+    negotiation_constructor.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -210,6 +223,50 @@ async def test_inert_status_proves_private_dependency_health(monkeypatch, tmp_pa
     assert result["checks"]["registry"] == "ok"
     assert result["checks"]["registry_auth"] == "ok"
     assert result["checks"]["provisioning"] == "ok"
+    assert result["checks"]["negotiation_strategy"] == "disabled"
     registry.assert_awaited_once_with()
     registry_auth.assert_awaited_once_with()
     provisioning.assert_awaited_once_with()
+
+
+def test_inert_entrypoint_never_starts_zerotier_daemon(tmp_path):
+    storefront_root = Path(__file__).resolve().parents[2]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "sudo-called"
+    fake_sudo = fake_bin / "sudo"
+    fake_sudo.write_text(
+        "#!/bin/sh\n"
+        ': > "$INERT_SUDO_MARKER"\n'
+        "exit 99\n"
+    )
+    fake_sudo.chmod(0o755)
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{fake_bin}:{environment['PATH']}",
+            "STOREFRONT_ACTIVATION_MODE": "inert",
+            "INERT_SUDO_MARKER": str(marker),
+        }
+    )
+    result = subprocess.run(
+        [
+            "/bin/sh",
+            str(storefront_root / "entrypoint.sh"),
+            "python3",
+            "-c",
+            "print('inert-entrypoint-ok')",
+        ],
+        cwd=storefront_root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert marker.exists() is False
+    assert "Inert activation mode: ZeroTier daemon disabled." in result.stdout
+    assert "inert-entrypoint-ok" in result.stdout
