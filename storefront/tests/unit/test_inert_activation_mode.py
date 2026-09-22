@@ -270,3 +270,61 @@ def test_inert_entrypoint_never_starts_zerotier_daemon(tmp_path):
     assert marker.exists() is False
     assert "Inert activation mode: ZeroTier daemon disabled." in result.stdout
     assert "inert-entrypoint-ok" in result.stdout
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_check", ["registry", "registry_auth", "provisioning"])
+@pytest.mark.parametrize("failure", ["unconfigured", "disabled", "missing_credentials", "http_401"])
+async def test_inert_status_never_promotes_missing_dependencies(
+    monkeypatch, tmp_path, failed_check, failure
+):
+    monkeypatch.setattr(storefront_config, "ACTIVATION_MODE", "inert")
+    monkeypatch.setattr(container, "resolved_alkahest_clients", {})
+    service = SystemService(sqlite_client=SQLiteClient(db_path=str(tmp_path / "status.db")))
+    for name in ["registry", "registry_auth", "provisioning"]:
+        monkeypatch.setattr(
+            service, f"{name}_check",
+            AsyncMock(return_value=failure if name == failed_check else "ok"),
+        )
+    result = await service.get_health(include_registry=True)
+    assert result["status"] == "degraded"
+    assert result["checks"][failed_check] == failure
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("codes,expected", [
+    ([401, 200], "http_401"),
+    ([200, 401], "http_401"),
+    ([503, 200, 200], "http_503"),
+    ([200, 200], "ok"),
+])
+async def test_registry_auth_requires_every_registry(monkeypatch, codes, expected):
+    import market_storefront.services.system_service as system_module
+
+    urls = [f"http://registry-{index}.test" for index in range(len(codes))]
+    monkeypatch.setattr(system_module, "settings", SimpleNamespace(
+        registry=SimpleNamespace(urls=urls, auth=dict.fromkeys(urls, "fixture-only")),
+    ))
+    responses = dict(zip(urls, codes, strict=True))
+    observed = []
+
+    class Client:
+        def __init__(self, *, timeout):
+            assert timeout == 2.0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def get(self, url, *, params, headers):
+            assert params == {"limit": 1}
+            assert headers == {"Authorization": "Bearer fixture-only"}
+            assert url.endswith("/listings")
+            observed.append(url)
+            return SimpleNamespace(status_code=responses[url.removesuffix("/listings")])
+
+    monkeypatch.setattr(system_module.httpx, "AsyncClient", Client)
+    assert await SystemService(sqlite_client=None).registry_auth_check() == expected
+    assert len(observed) == len(urls)

@@ -97,6 +97,11 @@ class SystemService:
             comma-joined list of configured chain names when at least one chain
             is up — also handled with its own rule.
             """
+            # Inert diagnostic status exists to prove the private dependencies.
+            # Missing configuration is not successful observation. Preserve the
+            # historical active-mode and lightweight liveness behavior below.
+            if inert and key in {"registry", "registry_auth", "provisioning"}:
+                return value == "ok"
             if value in ("ok", "unconfigured", "disabled"):
                 return True
             if key == "negotiation_strategy":
@@ -222,7 +227,8 @@ class SystemService:
                 return f"error: {type(exc).__name__}"
 
         results = await asyncio.gather(*[_probe(url) for url in urls])
-        return "ok" if all(result == "ok" for result in results) else results[-1]
+        # A trailing success must not hide an earlier rejected credential.
+        return next((result for result in results if result != "ok"), "ok")
 
     async def provisioning_check(self) -> str:
         """Probe only the configured provisioning service's local health route."""
