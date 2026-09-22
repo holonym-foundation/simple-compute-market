@@ -7,18 +7,19 @@ without an HTTP request/response cycle.
 from __future__ import annotations
 
 import asyncio
-import httpx
 import logging
 import os
-import time
 from typing import Any
 
+import httpx
+
 import market_storefront.container as _container
+import market_storefront.utils.config as storefront_config
 from market_storefront.utils.config import (
+    AGENT_ID,
     CHAINS,
     ESCROW_TEMPLATES,
     settings,
-    AGENT_ID,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,14 +71,22 @@ class SystemService:
 
         if include_registry:
             checks["registry"] = await self.registry_check()
-            checks["negotiation_strategy"] = self.negotiation_strategy_check()
+            if storefront_config.ACTIVATION_MODE == "inert":
+                checks["registry_auth"] = await self.registry_auth_check()
+                checks["provisioning"] = await self.provisioning_check()
+                checks["negotiation_strategy"] = "disabled"
+            else:
+                checks["negotiation_strategy"] = self.negotiation_strategy_check()
 
-        # alkahest configured?
-        configured = _container.configured_chain_names()
-        if configured:
-            checks["alkahest"] = ",".join(sorted(configured))
+        inert = storefront_config.ACTIVATION_MODE == "inert"
+        if inert:
+            checks["alkahest"] = "disabled"
         else:
-            checks["alkahest"] = "unconfigured"
+            configured = _container.configured_chain_names()
+            if configured:
+                checks["alkahest"] = ",".join(sorted(configured))
+            else:
+                checks["alkahest"] = "unconfigured"
 
         def _check_is_healthy(key: str, value: str) -> bool:
             """Return True if this check value does not indicate a service degradation.
@@ -88,7 +97,12 @@ class SystemService:
             comma-joined list of configured chain names when at least one chain
             is up — also handled with its own rule.
             """
-            if value in ("ok", "unconfigured"):
+            # Inert diagnostic status exists to prove the private dependencies.
+            # Missing configuration is not successful observation. Preserve the
+            # historical active-mode and lightweight liveness behavior below.
+            if inert and key in {"registry", "registry_auth", "provisioning"}:
+                return value == "ok"
+            if value in ("ok", "unconfigured", "disabled"):
                 return True
             if key == "negotiation_strategy":
                 return "exit_on_probe" not in value and not value.startswith(
@@ -100,7 +114,16 @@ class SystemService:
 
         all_ok = all(_check_is_healthy(k, v) for k, v in checks.items())
 
-        result: dict = {"status": "ok" if all_ok else "degraded", "checks": checks}
+        result: dict = {
+            "status": "ok" if all_ok else "degraded",
+            "checks": checks,
+            "activation_mode": storefront_config.ACTIVATION_MODE,
+            "signing_enabled": (
+                not inert and bool(_container.resolved_alkahest_clients)
+            ),
+            "external_actions_enabled": not inert,
+            "background_tasks_enabled": not inert,
+        }
 
         if include_registry:
             # Top-level diagnostic facts. Identity is the wallet (eip191),
@@ -168,6 +191,60 @@ class SystemService:
             return "ok"
         # Surface the most recent non-ok result (all are non-ok here).
         return results[-1]
+
+    async def registry_auth_check(self) -> str:
+        """Verify the configured registry credential with a bounded read.
+
+        Unlike ``registry_check``, this does not use the public liveness route.
+        It proves that every configured registry accepts the exact bearer token
+        for a read-only listings request. It is called only by inert diagnostic
+        status, where a missing or rejected credential must remain visible.
+        """
+        urls = [u.rstrip("/") for u in (settings.registry.urls or []) if u]
+        if not urls:
+            return "unconfigured"
+        auth = settings.registry.auth or {}
+
+        async def _probe(url: str) -> str:
+            token = auth.get(url) or auth.get(url + "/")
+            if not token:
+                return "missing_credentials"
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    response = await client.get(
+                        f"{url}/listings",
+                        params={"limit": 1},
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                if response.status_code == 200:
+                    return "ok"
+                return f"http_{response.status_code}"
+            except httpx.ConnectError:
+                return "unreachable"
+            except httpx.TimeoutException:
+                return "timeout"
+            except Exception as exc:
+                return f"error: {type(exc).__name__}"
+
+        results = await asyncio.gather(*[_probe(url) for url in urls])
+        # A trailing success must not hide an earlier rejected credential.
+        return next((result for result in results if result != "ok"), "ok")
+
+    async def provisioning_check(self) -> str:
+        """Probe only the configured provisioning service's local health route."""
+        url = str(settings.provisioning.service_url or "").rstrip("/")
+        if not url:
+            return "unconfigured"
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                response = await client.get(f"{url}/health")
+            return "ok" if response.status_code == 200 else f"http_{response.status_code}"
+        except httpx.ConnectError:
+            return "unreachable"
+        except httpx.TimeoutException:
+            return "timeout"
+        except Exception as exc:
+            return f"error: {type(exc).__name__}"
 
     # Canonical bind-mount target for the inventory CSV inside a container.
     # When neither csv_inline nor csv_path is set explicitly,
@@ -263,6 +340,7 @@ class SystemService:
                 NegotiationRound,
                 run_negotiation_chain,
             )
+
             from market_storefront.utils.sync_negotiation import _load_storefront_chain
 
             chain = _load_storefront_chain()

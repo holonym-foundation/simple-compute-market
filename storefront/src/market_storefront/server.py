@@ -18,11 +18,13 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse
 
 import market_storefront.container as _container
-from market_storefront.utils.config import settings, AGENT_ID
+import market_storefront.utils.config as storefront_config
+from market_storefront.utils.config import AGENT_ID, settings
 from market_storefront.utils.sqlite_client import get_sqlite_client
 
 logger = logging.getLogger(__name__)
@@ -33,12 +35,31 @@ logger = logging.getLogger(__name__)
 
 _GLOBALLY_PAUSED: bool = False
 
+_INERT_READ_PATHS = frozenset(
+    {
+        "/health",
+        "/api/v1/system/health",
+        "/api/v1/system/status",
+    }
+)
+
+
+def is_inert_mode() -> bool:
+    return storefront_config.ACTIVATION_MODE == "inert"
+
+
+def inert_request_allowed(method: str, path: str) -> bool:
+    """Whether an HTTP request is within the inert observation surface."""
+    return method.upper() in {"GET", "HEAD"} and path in _INERT_READ_PATHS
+
 
 def is_globally_paused() -> bool:
-    return _GLOBALLY_PAUSED
+    return is_inert_mode() or _GLOBALLY_PAUSED
 
 
 def _set_globally_paused(value: bool) -> None:
+    if is_inert_mode() and not value:
+        raise RuntimeError("an inert storefront cannot be resumed")
     global _GLOBALLY_PAUSED
     _GLOBALLY_PAUSED = value
 
@@ -68,13 +89,26 @@ async def lifespan(_: FastAPI):
     from market_storefront.services.system_service import SystemService
 
     sqlite_client = get_sqlite_client()
-    alkahest_clients = alkahest_service.build_clients()
+    if is_inert_mode():
+        alkahest_clients = {}
+        logger.warning(
+            "[STARTUP] Inert activation mode: signer and chain clients are disabled"
+        )
+    else:
+        alkahest_clients = alkahest_service.build_clients()
 
-    listing_svc = ListingService(
-        sqlite_client=sqlite_client,
-        alkahest_clients=alkahest_clients,
-    )
-    negotiation_svc = NegotiationService(sqlite_client=sqlite_client)
+    if is_inert_mode():
+        # The middleware denies every seller/buyer route in inert mode. Keep
+        # their service objects absent as a second boundary so a future route
+        # wiring mistake cannot inherit initialized action-capable services.
+        listing_svc = None
+        negotiation_svc = None
+    else:
+        listing_svc = ListingService(
+            sqlite_client=sqlite_client,
+            alkahest_clients=alkahest_clients,
+        )
+        negotiation_svc = NegotiationService(sqlite_client=sqlite_client)
     system_svc = SystemService(sqlite_client=sqlite_client, agent_id=AGENT_ID)
 
     _container.resolved_sqlite_client = sqlite_client
@@ -113,6 +147,27 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def enforce_activation_mode(request: Request, call_next):
+    """Deny every non-observation route before handler/auth execution when inert."""
+    if is_inert_mode() and not inert_request_allowed(
+        request.method, request.url.path
+    ):
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "storefront_inert",
+                "detail": (
+                    "This storefront is running in inert observation mode; "
+                    "seller and buyer actions are disabled."
+                ),
+                "activation_mode": "inert",
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+    return await call_next(request)
+
+
 def _custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -144,12 +199,30 @@ def _custom_openapi():
 app.openapi = _custom_openapi
 
 # Controller imports after module-level app exists.
-from market_storefront.controllers.system_controller import router as system_router           # noqa: E402
-from market_storefront.controllers.admin_controller import router as admin_router          # noqa: E402
-from market_storefront.controllers.listings_controller import router as listings_router, admin_router as admin_listings_router       # noqa: E402
-from market_storefront.controllers.negotiations_controller import router as negotiations_router  # noqa: E402
-from market_storefront.controllers.negotiate_controller import router as negotiate_router     # noqa: E402
-from market_storefront.controllers.settle_controller import router as settle_router, admin_settle_router           # noqa: E402
+from market_storefront.controllers.admin_controller import (  # noqa: E402
+    router as admin_router,
+)
+from market_storefront.controllers.listings_controller import (  # noqa: E402
+    admin_router as admin_listings_router,
+)
+from market_storefront.controllers.listings_controller import (  # noqa: E402
+    router as listings_router,
+)
+from market_storefront.controllers.negotiate_controller import (  # noqa: E402
+    router as negotiate_router,
+)
+from market_storefront.controllers.negotiations_controller import (  # noqa: E402
+    router as negotiations_router,
+)
+from market_storefront.controllers.settle_controller import (  # noqa: E402
+    admin_settle_router,
+)
+from market_storefront.controllers.settle_controller import (  # noqa: E402
+    router as settle_router,
+)
+from market_storefront.controllers.system_controller import (  # noqa: E402
+    router as system_router,
+)
 
 app.include_router(system_router)
 app.include_router(admin_router)

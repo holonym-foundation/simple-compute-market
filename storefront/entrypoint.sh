@@ -28,12 +28,22 @@
 
 set -eu
 
-echo "Starting ZeroTier daemon (fail-soft)..."
-sudo zerotier-one -d || echo "ZeroTier daemon could not start (no caps?). Continuing."
-for i in $(seq 1 10); do
-  [ -f /var/lib/zerotier-one/zerotier-one.port ] && break
-  sleep 1
-done
+# Resolve the effective Dynaconf setting, including a mounted TOML overlay,
+# before starting any networking side process. Invalid or ambiguous modes fail
+# the container here. Inert mode must not start even an unjoined ZeroTier
+# daemon; the application also independently suppresses its join call.
+activation_mode="$(python3 -c 'from market_storefront.utils.config import ACTIVATION_MODE; print(ACTIVATION_MODE)')"
+if [ "$activation_mode" = "inert" ]; then
+  echo "Inert activation mode: ZeroTier daemon disabled."
+else
+  echo "Starting ZeroTier daemon (fail-soft)..."
+  sudo zerotier-one -d || echo "ZeroTier daemon could not start (no caps?). Continuing."
+  for i in $(seq 1 10); do
+    [ -f /var/lib/zerotier-one/zerotier-one.port ] && break
+    sleep 1
+  done
+fi
+unset activation_mode
 
 if [ "$#" -gt 0 ]; then
   exec "$@"

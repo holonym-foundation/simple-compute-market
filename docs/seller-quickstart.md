@@ -95,6 +95,30 @@ default_max_duration_seconds = 86400
 The full schema is at
 [`storefront/src/market_storefront/settings.toml`](../storefront/src/market_storefront/settings.toml).
 
+### Inert observation mode
+
+Use `activation_mode = "inert"` only for a non-authoritative deployment
+rehearsal. In this mode the process initializes its local database and checks
+its configured private provisioning dependency plus an authenticated,
+read-only registry request, but it does not construct a signer or chain client,
+start or join ZeroTier, initialize negotiation state, seed resource inventory,
+probe a chain RPC, start negotiation watchdogs, or construct seller/buyer
+services. Only these observation endpoints remain available:
+
+- `GET /health`
+- `GET /api/v1/system/health`
+- `GET /api/v1/system/status`
+
+Every other HTTP route returns `503 storefront_inert` before its handler or
+authentication dependency runs, and the storefront cannot be resumed through
+the admin API. This is a safety boundary for staged infrastructure inspection,
+not a live seller configuration. Change to `active` only through the operator's
+normal reviewed deployment process.
+
+The inert status response reports the local resource count for inspection. A
+rehearsal must begin and remain at zero; inert mode never imports the mounted
+`resources.csv` automatically.
+
 ## 3. resources.csv
 
 What you offer for sale. One row per slice. The compose mounts

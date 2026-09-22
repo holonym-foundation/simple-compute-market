@@ -1,7 +1,7 @@
 """HTTP request/response models for System and Admin controllers."""
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -9,6 +9,10 @@ from pydantic import BaseModel, Field
 class HealthResponse(BaseModel):
     status: str
     checks: dict[str, str] = Field(default_factory=dict)
+    activation_mode: str = "unknown"
+    signing_enabled: bool = False
+    external_actions_enabled: bool = False
+    background_tasks_enabled: bool = False
     paused: bool | None = None
     agent_id: str | None = None
     chain_id: int | None = None
@@ -95,11 +99,11 @@ class ResourcePatchRequest(BaseModel):
     ``attributes.lease_end_utc``; ignored if ``attributes`` also sets it.
     """
 
-    state: Optional[str] = Field(
+    state: str | None = Field(
         default=None,
         description="New resource state. Only written if provided.",
     )
-    attributes: Optional[dict] = Field(
+    attributes: dict | None = Field(
         default=None,
         description=(
             "Partial attribute patch. Keys present in this dict are merged "
@@ -117,8 +121,8 @@ class ResourcePatchResponse(BaseModel):
     """
 
     resource_id: str
-    state: Optional[str] = None
-    attributes: Optional[dict] = None
+    state: str | None = None
+    attributes: dict | None = None
     updated: bool = Field(
         description="True if any field was actually changed; False if the "
                     "row was already in the requested state (idempotent call)."

@@ -48,6 +48,23 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_AGENT_ID = "root_agent"
 _DEFAULTS_FILE = Path(__file__).resolve().parent.parent / "settings.toml"
+SUPPORTED_ACTIVATION_MODES = frozenset({"active", "inert"})
+
+
+def validate_activation_mode(raw: Any) -> str:
+    """Return the normalized storefront activation mode or fail closed.
+
+    ``active`` preserves the historical runtime. ``inert`` exists for a
+    deliberately non-authoritative deployment rehearsal: it must never be
+    treated as a synonym for a paused but otherwise live seller.
+    """
+    mode = str(raw or "").strip().lower()
+    if mode not in SUPPORTED_ACTIVATION_MODES:
+        allowed = ", ".join(sorted(SUPPORTED_ACTIVATION_MODES))
+        raise ValueError(
+            f"activation_mode must be one of: {allowed}; got {raw!r}"
+        )
+    return mode
 
 
 def _build_settings() -> Dynaconf:
@@ -102,7 +119,7 @@ def _coerce_chains_table(raw: Any) -> dict[str, dict[str, Any]]:
         if not isinstance(name, str):
             continue
         if hasattr(sub, "items"):
-            out[name] = {k: v for k, v in sub.items()}
+            out[name] = dict(sub.items())
         elif isinstance(sub, dict):
             out[name] = sub
     return out
@@ -130,7 +147,7 @@ def _coerce_templates_table(raw: Any) -> dict[str, dict[str, Any]]:
         coerced: dict[str, Any] = {}
         for k, v in sub.items():
             if hasattr(v, "items") and not isinstance(v, dict):
-                coerced[k] = {sk: sv for sk, sv in v.items()}
+                coerced[k] = dict(v.items())
             else:
                 coerced[k] = v
         out[name] = coerced
@@ -149,6 +166,9 @@ def _build_escrow_templates(
 
 
 settings: Dynaconf = _build_settings()
+ACTIVATION_MODE: str = validate_activation_mode(
+    settings.get("activation_mode", "active")
+)
 CHAINS: dict[str, ChainConfig] = _build_chains(settings)
 ESCROW_TEMPLATES: dict[str, EscrowTemplate] = _build_escrow_templates(settings, CHAINS)
 
@@ -172,6 +192,7 @@ def _validate_agent_id(raw: Any) -> str:
             f"'{DEFAULT_AGENT_ID}'. Set agent_id to a valid identifier "
             f"(letters, digits, underscores only).",
             UserWarning,
+            stacklevel=2,
         )
         return DEFAULT_AGENT_ID
     s = str(raw)
