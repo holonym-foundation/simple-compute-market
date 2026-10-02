@@ -177,6 +177,7 @@ async def _do_provision(
     virtualization_type: str = "vm",
     container_image: str | None = None,
     container_env: dict | None = None,
+    lease_id: str | None = None,
     on_job_submitted: Callable[[str], Awaitable[None]] | None = None,
 ) -> dict:
     """Submit a create job to the provisioning service and return the result.
@@ -205,6 +206,10 @@ async def _do_provision(
                 _req["container_image"] = container_image
             if container_env:
                 _req["container_env"] = container_env
+            # Bind the workload/volume and capability mount to the seller's
+            # settled escrow, never a buyer-controlled environment field.
+            if lease_id is not None:
+                _req["lease_id"] = lease_id
             submit = await client.create_container(
                 vm_host, CreateContainerRequest(**_req)
             )
@@ -831,6 +836,7 @@ async def fulfill_compute_obligation(
             virtualization_type=str(_attrs.get("virtualization_type") or "vm"),
             container_image=_attrs.get("container_image") or None,
             container_env=container_env or None,
+            lease_id=escrow_uid,
             on_job_submitted=_record_job_id,
         )
         # Split credentials out before serialising — passwords must never touch on-chain data.
