@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
 
 import pytest
 
@@ -132,6 +133,7 @@ async def test_fulfill_compute_obligation_reports_error_when_onchain_fulfillment
     )
 
     assert result["status"] == "error"
+    assert action_executor._do_provision.await_args.kwargs["lease_id"] == "escrow-1"
     assert "contract reverted" in result["message"]
     assert result["connection_details"] is None
     alkahest.oracle.request_arbitration.assert_not_called()
@@ -198,6 +200,7 @@ async def test_reservation_closes_oversized_dynamic_listings(client, monkeypatch
     )
 
     assert result["status"] == "fulfilled"
+    assert action_executor._do_provision.await_args.kwargs["lease_id"] == "escrow-2x"
     statuses = {
         gpu_count: (await client.load_listing(listing_id=f"listing-{gpu_count}x"))[
             "status"
@@ -210,3 +213,36 @@ async def test_reservation_closes_oversized_dynamic_listings(client, monkeypatch
         3: "closed",
         4: "closed",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lease_id", ["0x" + "ab" * 32, None])
+async def test_container_provisioning_preserves_settled_lease_binding(monkeypatch, lease_id):
+    transport = MagicMock()
+    transport.__aenter__ = AsyncMock(return_value=transport)
+    transport.__aexit__ = AsyncMock(return_value=None)
+    transport.create_container = AsyncMock(return_value=SimpleNamespace(job_id="job-1"))
+    transport.poll_until_complete = AsyncMock(
+        return_value=SimpleNamespace(result={"container_name": "tenant-test", "lease_id": lease_id})
+    )
+    factory = MagicMock(return_value=transport)
+    monkeypatch.setattr(action_executor, "ProvisioningClient", factory)
+    # A buyer's environment cannot select the provisioning request's lease ID.
+    env = {"AEX_AGENT_ID": "test-agent", "lease_id": "buyer-controlled"}
+    submitted = AsyncMock()
+    result = await action_executor._do_provision(
+        "", vm_host="host-1", vm_target="tenant-test", virtualization_type="container",
+        container_image="registry.example/runtime@sha256:" + "a" * 64,
+        container_env=env, lease_id=lease_id, on_job_submitted=submitted,
+    )
+    host, request = transport.create_container.await_args.args
+    assert host == "host-1"
+    assert request.lease_id == lease_id
+    assert request.container_env == env
+    assert request.container_target == "tenant-test"
+    params = request.to_ansible_job_params(host)
+    assert params.lease_id == lease_id
+    assert params.container_env == env
+    assert result["lease_id"] == lease_id
+    submitted.assert_awaited_once_with("job-1")
+    transport.create_container.assert_awaited_once()
