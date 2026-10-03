@@ -433,6 +433,31 @@ async def test_background_task_writes_failed_on_exception(client):
 
 
 @pytest.mark.asyncio
+async def test_uncertain_preparation_preserves_escrow_fence_without_retry(client):
+    await _seed_seller_order(client)
+    await _seed_negotiation(client)
+    await _seed_escrow_provisioning(client)
+    with patch("market_storefront.utils.action_executor.fulfill_compute_obligation",
+               new=AsyncMock(return_value={"status": "uncertain"})):
+        await _run_settlement_job_bg(
+            escrow_uid="0xescrow", provision=ProvisionTerms(duration_seconds=3600, ssh_public_key=""),
+            listing_id="seller-ord-1", order_dict={}, sqlite_client=client, alkahest_client=MagicMock(),
+        )
+    row = await client.load_escrow(escrow_uid="0xescrow")
+    assert row["status"] == "provisioning"
+    assert "reconciliation_required" in row["reason"]
+    assert not row.get("fulfillment_uid") and not row.get("connection_details")
+    with patch("market_storefront.utils.settlement_jobs._run_settlement_job_bg", new=AsyncMock()) as bg, \
+         patch("market_storefront.utils.escrow_verification.verify_escrow_for_settlement", new=AsyncMock()):
+        again = await start_settlement_job(
+            escrow_uid="0xescrow", negotiation_id="neg-1", ssh_public_key="",
+            sqlite_client=client, alkahest_client=MagicMock(), chain_name="anvil",
+        )
+    assert again["reason"] == row["reason"]
+    bg.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_background_task_leaves_listing_open_on_failure(client):
     """A failed deal updates only per-escrow state; listing state is unchanged."""
     await _seed_seller_order(client, listing_id="seller-ord-1")

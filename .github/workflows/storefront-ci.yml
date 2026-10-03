@@ -69,6 +69,17 @@ jobs:
         working-directory: storefront
         run: uv run pytest tests/unit tests/integration -q
 
+      - name: Test provisioning admission and existing worker paths
+        working-directory: storefront
+        env:
+          PYTHONPATH: ../provisioning-service/src
+        run: |
+          uv run python -m pytest \
+            ../provisioning-service/src/tests/unit \
+            ../provisioning-service/src/tests/integration/test_containers_api.py \
+            ../provisioning-service/src/tests/integration/test_retry_scheduler.py \
+            ../provisioning-service/src/tests/integration/test_vms_api.py -q
+
       - name: Build and inspect inert storefront artifact
         run: |
           DOCKER_BUILDKIT=1 docker build \

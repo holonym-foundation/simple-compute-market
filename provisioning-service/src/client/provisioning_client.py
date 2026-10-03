@@ -244,6 +244,14 @@ class ProvisioningClient(_ProvisioningClientBase):
         """POST /api/v1/hosts/{host}/containers/"""
         return self._submit(await self._post(f"/api/v1/hosts/{host}/containers/", body))
 
+    async def admit_container(self, host: str, job_id: str, body, *, admission_key: str) -> JobSubmitResponse:
+        """Coordinator only: release an exact prepared request after host admission."""
+        path = f"/api/v1/hosts/{host}/containers/prepared/{job_id}/admit"
+        resp = await self._client.post(path, json=body.model_dump(mode="json"),
+                                      headers={**self._headers(), "X-Admission-Key": admission_key})
+        self._raise_for_status("POST", self._url(path), resp.status_code, resp.text)
+        return self._submit(resp.json())
+
     async def list_vms(self, host: str, body: Optional[VmActionRequest] = None) -> JobSubmitResponse:
         """POST /api/v1/hosts/{host}/vms/ (list action)"""
         return self._submit(await self._post(f"/api/v1/hosts/{host}/vms/", body or VmActionRequest()))
@@ -438,7 +446,7 @@ class ProvisioningClient(_ProvisioningClientBase):
         """Poll GET /api/v1/jobs/{job_id} until terminal state.
 
         Returns the final ``JobStatusResponse`` on ``succeeded``.
-        Raises ``ProvisioningJobError`` on ``failed`` or ``cancelled``.
+        Raises ``ProvisioningJobError`` on ``failed``, ``cancelled`` or ``uncertain``.
         Raises ``ProvisioningTimeoutError`` if ``timeout`` seconds elapse.
         """
         deadline = asyncio.get_event_loop().time() + timeout
@@ -446,7 +454,7 @@ class ProvisioningClient(_ProvisioningClientBase):
             job = await self.get_job(job_id)
             if job.status == "succeeded":
                 return job
-            if job.status in ("failed", "cancelled"):
+            if job.status in ("failed", "cancelled", "uncertain"):
                 raise ProvisioningJobError(
                     f"Job {job_id} {job.status}: {job.error or 'unknown error'}"
                 )
@@ -756,7 +764,7 @@ class SyncProvisioningClient(_ProvisioningClientBase):
             job = self.get_job(job_id)
             if job.status == "succeeded":
                 return job
-            if job.status in ("failed", "cancelled"):
+            if job.status in ("failed", "cancelled", "uncertain"):
                 raise ProvisioningJobError(
                     f"Job {job_id} {job.status}: {job.error or 'unknown error'}"
                 )

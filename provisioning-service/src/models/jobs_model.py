@@ -108,14 +108,14 @@ class AnsibleRunResult:
 
 
 class JobSubmitResponse(BaseModel):
-    """Returned immediately when a job is accepted into the queue.
+    """Returned when a job is persisted (prepared jobs are not queued).
 
     Poll ``GET /api/v1/jobs/{job_id}`` for status updates.
     The job_id is stable across retries; use it for credentials and logs too.
     """
 
     job_id: str = Field(description="Stable unique identifier for the queued job")
-    status: str = Field(description="Initial job status (always 'queued')")
+    status: str = Field(description="Job status: prepared (not queued), queued, or existing idempotent state")
 
 
 class JobStatusResponse(BaseModel):

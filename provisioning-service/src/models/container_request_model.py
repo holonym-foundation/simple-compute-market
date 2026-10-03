@@ -12,10 +12,17 @@ not the body — same convention as the VM models.
 from __future__ import annotations
 
 from typing import Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from models.jobs_model import AnsibleJobParams
+
+
+class AdmitContainerRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    request_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    admission_id: UUID
 
 
 class ContainerActionRequest(BaseModel):

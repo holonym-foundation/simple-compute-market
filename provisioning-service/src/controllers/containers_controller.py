@@ -13,17 +13,19 @@ a ``JobSubmitResponse``; callers poll ``GET /api/v1/jobs/{job_id}``.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Header, status
 from fastapi_utils.cbv import cbv
 
 import container as _container_module
 from models.container_request_model import (
     ContainerActionRequest,
+    AdmitContainerRequest,
     CreateContainerRequest,
     build_simple_container_params,
 )
 from models.jobs_model import JobSubmitResponse
 from services.job_service import AnsibleJobService
+from services.container_preparation import admit
 
 router = APIRouter(prefix="/hosts/{host}/containers", tags=["containers"])
 
@@ -63,6 +65,19 @@ class ContainerController:
     ) -> JobSubmitResponse:
         """Provision a new container tenant on ``host``. """ + _POLL_NOTE
         return await self._submit(body.to_ansible_job_params(host))
+
+    @router.post("/prepared/{job_id}/admit", response_model=JobSubmitResponse)
+    async def admit_container(
+        self, host: str, job_id: str, body: AdmitContainerRequest,
+        x_admin_key: str = Header(default=""),
+        x_admission_key: str = Header(default=""),
+    ) -> JobSubmitResponse:
+        """Coordinator-only release after primary enrollment and host mount verification."""
+        return await admit(
+            self._job_service._session_factory, self._job_service._settings,
+            _container_module.resolved_job_queue, host, job_id, body,
+            x_admin_key, x_admission_key,
+        )
 
     @router.get(
         "/",

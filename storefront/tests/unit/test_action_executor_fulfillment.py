@@ -246,3 +246,31 @@ async def test_container_provisioning_preserves_settled_lease_binding(monkeypatc
     assert result["lease_id"] == lease_id
     submitted.assert_awaited_once_with("job-1")
     transport.create_container.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_capability_timeout_keeps_real_allocation_occupied(client, monkeypatch):
+    await _seed_compute_pool(client)
+    monkeypatch.setattr(action_executor, "get_sqlite_client", lambda: client)
+    provision = AsyncMock(side_effect=TimeoutError("reply lost after create request"))
+    monkeypatch.setattr(action_executor, "_do_provision", provision)
+    alkahest = MagicMock()
+    result = await action_executor.fulfill_compute_obligation(
+        client=alkahest, escrow_uid="escrow-timeout", ssh_public_key="",
+        oracle_address="0x" + "33" * 20, order=_compute_listing(), duration_seconds=3600,
+        listing_id="listing-1", container_env={"AEX_CAPABILITY_DIRECTORY": "/run/aex/capabilities"},
+    )
+    assert result["status"] == "uncertain"
+    selected = await client.select_available_compute_vm(
+        required_attributes={"resource_id": "pool-h200-1", "gpu_count": 1})
+    assert selected is None
+    import sqlite3
+    import uuid
+    with sqlite3.connect(client.db_path) as db:
+        state, target = db.execute(
+            "SELECT state, vm_target FROM compute_allocations WHERE escrow_uid = ?",
+            ("escrow-timeout",),
+        ).fetchone()
+    assert state == "held"
+    assert target == "tenant-" + uuid.uuid5(uuid.NAMESPACE_URL, "scm-container-lease:escrow-timeout").hex
+    alkahest.string_obligation.do_obligation.assert_not_called()
