@@ -721,7 +721,11 @@ async def fulfill_compute_obligation(
     reserved_allocation_id: str | None = None
     reserved_resource_id: str | None = None
     reserved_vm_host: str | None = None
-    vm_target = f"tenant-{uuid.uuid4().hex[:4]}"
+    capability_request = isinstance(container_env, dict) and "AEX_CAPABILITY_DIRECTORY" in container_env
+    provisioning_dispatched = False
+    # Retries of one settled escrow must not select a different container name.
+    vm_target = (f"tenant-{uuid.uuid5(uuid.NAMESPACE_URL, 'scm-container-lease:' + escrow_uid).hex}"
+                 if capability_request else f"tenant-{uuid.uuid4().hex[:4]}")
 
     logger.info(f"[ALKAHEST] Order for fulfillment: {order}")
     order_dict = None
@@ -829,6 +833,7 @@ async def fulfill_compute_obligation(
         # creds), carried in ProvisionTerms via the settle request → start_settlement_job →
         # here (the `container_env` arg) — the same path ssh_public_key takes. (NOT the
         # resource attrs, which are shared across every deal on the listing.)
+        provisioning_dispatched = True
         provision_result = await _do_provision(
             ssh_public_key,
             vm_host=reserved_vm_host,
@@ -847,6 +852,19 @@ async def fulfill_compute_obligation(
         else:
             connection_details = provision_result
     except Exception as error:
+        if capability_request and provisioning_dispatched:
+            # A timeout, lost reply, failed playbook, or missing receipt does not
+            # prove the remote container absent. Hold the existing allocation;
+            # never replace it or claim settlement success on uncertainty.
+            if reserved_allocation_id:
+                await get_sqlite_client().update_compute_allocation_state(
+                    allocation_id=reserved_allocation_id, state="held",
+                    vm_host=reserved_vm_host, vm_target=vm_target,
+                    failure_reason="capability_provisioning_requires_reconciliation",
+                )
+            return {"status": "uncertain", "escrow_uid": escrow_uid,
+                    "message": "Prepared container requires reconciliation; capacity held",
+                    "connection_details": None}
         if reserved_allocation_id:
             try:
                 await get_sqlite_client().update_compute_allocation_state(

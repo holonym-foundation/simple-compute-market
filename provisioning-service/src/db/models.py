@@ -10,6 +10,8 @@ Base = declarative_base()
 
 
 class JobStatus(str, enum.Enum):
+    prepared = "prepared"
+    uncertain = "uncertain"
     queued = "queued"
     running = "running"
     succeeded = "succeeded"

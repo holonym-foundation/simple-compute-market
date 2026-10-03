@@ -252,7 +252,14 @@ async def _run_settlement_job_bg(
         return
 
     status = (result or {}).get("status")
-    if status == "fulfilled":
+    if status == "uncertain":
+        # Preserve the existing escrow fence. A repeated POST returns this row
+        # and cannot allocate/start a replacement while reconciliation is due.
+        await sqlite_client.update_escrow(
+            escrow_uid=escrow_uid, status="provisioning",
+            reason="reconciliation_required: capacity held; container outcome unconfirmed",
+        )
+    elif status == "fulfilled":
         await sqlite_client.update_escrow(
             escrow_uid=escrow_uid,
             status="ready",

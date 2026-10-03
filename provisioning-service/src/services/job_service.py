@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import signal
+import time
 import uuid
 from datetime import datetime, timedelta
 
@@ -44,6 +45,7 @@ from models.jobs_model import (
     JobSubmitResponse,
 )
 from services.ansible_service import AnsibleError, AnsibleService
+from services.container_preparation import METADATA, digest_request, prepare, requires_preparation
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,8 @@ class AnsibleJobService:
         job_queue,
     ) -> JobSubmitResponse:
         """Persist a new job and place it on the in-process queue."""
+        if requires_preparation(params):
+            return prepare(self._session_factory, params)
         job_id = str(uuid.uuid4())
         max_retries = (
             params.max_retries
@@ -267,7 +271,7 @@ class AnsibleJobService:
             if not job:
                 raise LookupError(f"Job {job_id} not found")
 
-            if job.status not in (JobStatus.queued.value, JobStatus.running.value):
+            if job.status not in (JobStatus.prepared.value, JobStatus.queued.value, JobStatus.running.value):
                 return {
                     "job_id": job.id,
                     "status": job.status,
@@ -314,6 +318,8 @@ class AnsibleJobService:
         log streaming, and credential storage.
         """
         db = self._session_factory()
+        rendered_inv_path = None
+        claimed = False
         try:
             job = (
                 db.query(AnsibleJob)
@@ -323,6 +329,25 @@ class AnsibleJobService:
             if not job:
                 logger.warning("Job %s not found", job_id)
                 return
+            if job.status != JobStatus.queued.value:
+                return
+            preparation = job.params.get(METADATA)
+            if (preparation is None and job.params.get("provisioning_type") == "container"
+                    and job.params.get("vm_action") == "create"
+                    and "AEX_CAPABILITY_DIRECTORY" in (job.params.get("container_env") or {})):
+                self._update_job(db, job, status=JobStatus.cancelled.value,
+                                 error="Capability container is missing preparation")
+                return
+            if preparation is not None:
+                if (not preparation.get("admission_id")
+                        or preparation.get("expires_at", 0) <= time.time()
+                        or preparation.get("request_digest") != digest_request(job.params)):
+                    db.query(AnsibleJob).filter(
+                        AnsibleJob.id == job_id, AnsibleJob.status == JobStatus.queued.value,
+                    ).update({"status": JobStatus.cancelled.value,
+                              "error": "Prepared admission absent, expired, or changed"})
+                    db.commit()
+                    return
 
             # Respect scheduled retry delay: if the job's next_retry_at is in
             # the future just return; the retry scheduler (run_retry_scheduler)
@@ -337,7 +362,13 @@ class AnsibleJobService:
                 job.max_retries + 1,
             )
 
-            self._update_job(db, job, status=JobStatus.running.value)
+            claimed = db.query(AnsibleJob).filter(
+                AnsibleJob.id == job_id, AnsibleJob.status == JobStatus.queued.value,
+            ).update({"status": JobStatus.running.value}, synchronize_session=False) == 1
+            db.commit()
+            if not claimed:
+                return
+            db.refresh(job)
             params = self._build_params(job.params)
             vars_path = self._ansible.build_vars_file(params)
 
@@ -437,7 +468,7 @@ class AnsibleJobService:
                 error_message = str(exc)
 
                 should_retry = (
-                    job.retry_count < job.max_retries
+                    METADATA not in job.params and job.retry_count < job.max_retries
                     and self._should_retry_error(error_message)
                 )
 
@@ -473,7 +504,7 @@ class AnsibleJobService:
                     self._update_job(
                         db,
                         job,
-                        status=JobStatus.failed.value,
+                        status=JobStatus.uncertain.value if METADATA in job.params else JobStatus.failed.value,
                         error=f"Job failed ({reason}): {error_message}",
                         logs=logs,
                     )
@@ -493,11 +524,11 @@ class AnsibleJobService:
                     .filter(AnsibleJob.id == job_id)
                     .one_or_none()
                 )
-                if job:
+                if job and claimed:
                     self._update_job(
                         db,
                         job,
-                        status=JobStatus.failed.value,
+                        status=JobStatus.uncertain.value if METADATA in job.params else JobStatus.failed.value,
                         error=f"Internal error: {exc}",
                     )
             except Exception:

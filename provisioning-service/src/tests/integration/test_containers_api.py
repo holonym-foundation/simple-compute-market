@@ -24,6 +24,44 @@ from services.async_job_queue import AsyncJobQueue
 HOST = "aex-native-scm"
 CNAME = "aex-t-1"
 
+
+async def test_capability_http_prepare_then_coordinator_admit(client_and_queue, fake_ansible):
+    import uuid
+    import container as services
+    from models.container_request_model import AdmitContainerRequest
+    from services.container_preparation import METADATA
+    from client.provisioning_client import ProvisioningError
+
+    client, queue = client_and_queue
+    services.resolved_job_service._settings.storefront_admin_key = "test-admin-key"
+    services.resolved_job_service._settings.container_admission_key = "test-coordinator-key"
+    # Use the existing configured seller client, but add no coordinator authority
+    # until the explicit admission below.
+    client._admin_key = "test-admin-key"
+    _stdout(fake_ansible, CONTAINER_CREATE_STDOUT)
+    request = CreateContainerRequest(
+        container_target=CNAME, container_image="registry/runtime@sha256:" + "a" * 64,
+        lease_id="http-escrow", container_env={"AEX_ENV": "staging",
+                                             "AEX_CAPABILITY_DIRECTORY": "/run/aex/capabilities"},
+    )
+    prepared = await client.create_container(HOST, request)
+    assert prepared.status == "prepared"
+    status = await client.get_job(prepared.job_id)
+    assert status.status == "prepared"
+    fake_ansible.start_playbook.assert_not_called()
+    body = AdmitContainerRequest(admission_id=uuid.uuid4(),
+                                request_digest=status.params[METADATA]["request_digest"])
+    with pytest.raises(ProvisioningError):
+        await client.admit_container(HOST, prepared.job_id, body, admission_key="wrong")
+    fake_ansible.start_playbook.assert_not_called()
+    admitted = await client.admit_container(HOST, prepared.job_id, body, admission_key="test-coordinator-key")
+    assert admitted.job_id == prepared.job_id
+    result = await client.poll_until_complete(prepared.job_id, timeout=5, poll_interval=0.01)
+    assert result.status == "succeeded"
+    again = await client.admit_container(HOST, prepared.job_id, body, admission_key="test-coordinator-key")
+    assert again.status == "succeeded"
+    fake_ansible.start_playbook.assert_called_once()
+
 # Realistic ansible stdout: the json-output role emits an action-tagged JSON
 # object in a `msg: |-` block (the format `_extract_ansible_json` actually parses
 # under the default/yaml callback — see fix/container-result-parse).

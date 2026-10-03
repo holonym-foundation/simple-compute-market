@@ -109,3 +109,6 @@ storefront_url = ""
 # lease-watchdog callback to the storefront, and gates every inbound request
 # (the storefront presents it as X-Admin-Key). Empty = auth disabled (dev only).
 storefront_admin_key = ""
+# Separate outside-tenant coordinator credential. Empty disables admission;
+# never give this key to the seller, app, or tenant container.
+container_admission_key = ""
