@@ -178,7 +178,10 @@ class ContinuationTests(unittest.IsolatedAsyncioTestCase):
         get_job = AsyncMock(return_value=self.job())
         async def observe(**kwargs):
             return await recovery.reconcile_continuation(self.path, UID, get_job=get_job, now=1100)
-        namespace = dict(ProvisionTerms=SimpleNamespace,
+        with sqlite3.connect(self.path) as con:
+            # Explicit legacy fixture: no pre-escrow hold was ever created.
+            con.execute('CREATE TABLE buyer_capacity_holds (negotiation_id TEXT)')
+        namespace = dict(asyncio=asyncio, ProvisionTerms=SimpleNamespace,
             _resolve_duration_seconds=lambda *a: 300, _resolve_compute_resource=lambda *a: {},
             logger=SimpleNamespace(info=lambda *a: None), reconcile_retained_settlement=observe)
         start = actual_function("settlement_jobs.py", "start_settlement_job", namespace)
@@ -227,7 +230,9 @@ class ContinuationTests(unittest.IsolatedAsyncioTestCase):
                          SettleStatusResponse=SimpleNamespace)
         source = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), node], type_ignores=[])
         exec(compile(ast.fix_missing_locations(source), "settle_controller.py", "exec"), namespace)
-        with patch("market_storefront.utils.settlement_jobs.reconcile_retained_settlement", new=observe):
+        serializer = actual_function('settlement_jobs.py', 'serialize_settlement_job', dict(json=json))
+        with patch.dict(sys.modules, {'market_storefront.utils.settlement_jobs': SimpleNamespace(
+                reconcile_retained_settlement=observe, serialize_settlement_job=serializer)}):
             response = await namespace["settle_status"](SimpleNamespace(_db=SimpleNamespace(load_escrow=load)),
                 UID, object(), buyer_address="synthetic")
         self.assertEqual(calls, ["auth", "read", "owner", "observe", "read"])
@@ -269,19 +274,24 @@ class ContinuationTests(unittest.IsolatedAsyncioTestCase):
                 raise TimeoutError("synthetic")
             return {"container_name": TARGET}
         provision = AsyncMock(side_effect=submit)
-        namespace = dict(uuid=uuid, dataclasses=dataclasses, json=json, logger=SimpleNamespace(info=lambda *a: None),
+        namespace = dict(asyncio=asyncio, uuid=uuid, dataclasses=dataclasses, json=json, logger=SimpleNamespace(info=lambda *a: None),
             get_sqlite_client=lambda: db, extract_compute_from_order=lambda o: {},
             _token_resource_from_accepted_escrow=lambda o: {}, encode_compute_lease=lambda **kw: b"exact-original",
             stage_event=lambda *a, **kw: None, close_stale_compute_listings_after_capacity_change=AsyncMock(return_value=[]),
             _do_provision=provision, CreateContainerRequest=Request)
         fulfill = actual_function("action_executor.py", "fulfill_compute_obligation", namespace)
-        with patch("market_storefront.utils.settlement_jobs.reconcile_retained_settlement", new=AsyncMock()) as observe:
+        # This continuation-only fixture supplies the now-mandatory consumed
+        # hold adapter explicitly. Real hold→arm→consume→fulfill is exercised
+        # against SQLite in test_capacity_holds; no fallback allocator is allowed.
+        observe = AsyncMock()
+        with patch('market_storefront.utils.capacity_holds.consumed_reservation', return_value=reserve.return_value) as consumed, \
+                patch.dict(sys.modules, {'market_storefront.utils.settlement_jobs': SimpleNamespace(reconcile_retained_settlement=observe)}):
             result = await fulfill(client=object(), escrow_uid=UID, ssh_public_key="", oracle_address="synthetic",
                 order={"listing_id": "listing-1", "accepted_escrows": [{}]}, listing_id="listing-1",
                 duration_seconds=300, container_env=PARAMS["container_env"])
         self.assertEqual(result["status"], "uncertain")
         self.assertIsNone(result["connection_details"])
-        reserve.assert_awaited_once(); provision.assert_awaited_once()
+        reserve.assert_not_awaited(); consumed.assert_called_once(); provision.assert_awaited_once()
         if timeout:
             observe.assert_not_awaited()
             db.update_compute_allocation_state.assert_awaited_once()

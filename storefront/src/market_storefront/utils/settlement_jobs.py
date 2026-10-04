@@ -71,6 +71,7 @@ async def start_settlement_job(
     negotiation_id: str,
     ssh_public_key: str,
     container_env: dict[str, str] | None = None,
+    capacity_hold_id: str | None = None,
     sqlite_client: Any,
     alkahest_client: Any,
     chain_name: str,
@@ -97,12 +98,22 @@ async def start_settlement_job(
     from market_storefront.utils.escrow_verification import (
         verify_escrow_for_settlement,
     )
+    from market_storefront.utils import capacity_holds
+
+    capability = isinstance(container_env, dict) and 'AEX_CAPABILITY_DIRECTORY' in container_env
+    if capability:
+        # No post-payment fallback allocation or downgrade to legacy fulfillment.
+        capacity_holds.require(capacity_hold_id is not None and ssh_public_key == '')
+    elif capacity_hold_id is not None or await asyncio.to_thread(capacity_holds.has_hold, sqlite_client.db_path, negotiation_id):
+        raise ValueError('capacity_hold_unavailable')
 
     chain_cfg = CHAINS.get(chain_name)
     if chain_cfg is None:
         raise ValueError(
             f"chain {chain_name!r} is not configured on this storefront"
         )
+    if capability:
+        capacity_holds.require(chain_name == 'base_sepolia' and getattr(chain_cfg, 'chain_id', None) == 84532)
 
     thread = await sqlite_client.load_negotiation_thread_row(
         negotiation_id=negotiation_id,
@@ -160,6 +171,13 @@ async def start_settlement_job(
         alkahest_address_config_path=chain_cfg.alkahest_address_config_path,
         escrow_proposal=proposal,
     )
+
+    if capability:
+        # The existing chain verifier must succeed before this same held
+        # allocation becomes bound to the exact escrow. Lost ACKs retain it.
+        await asyncio.to_thread(capacity_holds.consume, sqlite_client.db_path,
+            hold_id=capacity_hold_id, negotiation_id=negotiation_id, escrow_uid=escrow_uid,
+            container_env=container_env, seller=(settings.wallet.address or '').lower())
 
     # Pin the (chain_name, escrow_address) the buyer's proposal selected; if
     # absent (legacy threads), fall back to the listing's first accepted

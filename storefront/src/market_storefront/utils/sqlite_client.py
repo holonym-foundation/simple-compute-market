@@ -736,6 +736,8 @@ class SQLiteClient:
                 """
             )
             apply_schema_migrations(conn)
+            from .capacity_holds import tables as create_capacity_hold_tables
+            create_capacity_hold_tables(cur)
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_derived_compute_listings_resource "
                 "ON derived_compute_listings(resource_id, gpu_count)"
@@ -2478,6 +2480,7 @@ class SQLiteClient:
         required_attributes: dict[str, Any] | None = None,
         listing_id: str | None = None,
         escrow_uid: str | None = None,
+        capacity_hold_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Reserve one available compute resource.
 
@@ -2492,7 +2495,23 @@ class SQLiteClient:
             try:
                 cur = conn.cursor()
                 cur.execute("BEGIN IMMEDIATE")
-                requested_gpu_count = self._requested_gpu_count(required_attributes)
+                from . import capacity_holds
+                selected_attributes = required_attributes
+                hold_now = int(time.time())
+                hold_expiration = None
+                capacity_holds.expire_due(cur, self, hold_now)
+                if capacity_hold_binding is not None:
+                    capacity_holds.validate_binding(capacity_hold_binding)
+                    capacity_holds.require(escrow_uid is None and required_attributes is None
+                        and listing_id == capacity_hold_binding['listingId']
+                        and capacity_hold_binding['seller'] == (settings.wallet.address or '').lower())
+                    prior = capacity_holds.existing(cur, capacity_hold_binding)
+                    if prior:
+                        conn.commit()
+                        return capacity_holds.receipt(prior)
+                    selected_attributes, hold_expiration, hold_listing = capacity_holds.original(cur, capacity_hold_binding, hold_now, new=True)
+                    selected_attributes.pop('_capacity_hold_container')
+                requested_gpu_count = self._requested_gpu_count(selected_attributes)
                 rows = self._compute_candidate_rows(cur)
                 for (
                     pool_id,
@@ -2506,7 +2525,15 @@ class SQLiteClient:
                     member_gpu_count,
                     pool_resource_type,
                 ) in rows:
+                    if capacity_hold_binding is not None and pool_resource_type != 'compute.container':
+                        continue
                     attrs = self._compute_attrs_from_raw(attributes_raw)
+                    if capacity_hold_binding is not None:
+                        import re
+                        if (attrs.get('virtualization_type') != 'container'
+                                or not isinstance(attrs.get('container_image'), str)
+                                or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[0-9a-f]{64}', attrs['container_image'])):
+                            continue
                     if not self._compute_resource_matches(
                         pool_id=pool_id,
                         resource_id=resource_id,
@@ -2515,7 +2542,7 @@ class SQLiteClient:
                         state=state,
                         value=value,
                         attrs=attrs,
-                        required_attributes=required_attributes,
+                        required_attributes=selected_attributes,
                     ):
                         continue
 
@@ -2591,8 +2618,7 @@ class SQLiteClient:
                             now_iso,
                         ),
                     )
-                    conn.commit()
-                    return {
+                    reservation = {
                         "allocation_id": allocation_id,
                         "pool_id": pool_id,
                         "member_id": member_id,
@@ -2606,6 +2632,12 @@ class SQLiteClient:
                         "available_gpu_count": total_gpu_count - held_gpu_count - effective_requested,
                         "attributes": attrs,
                     }
+                    if capacity_hold_binding is not None:
+                        reservation['_hold_listing'] = hold_listing
+                    result = (capacity_holds.insert(cur, capacity_hold_binding, reservation, hold_now, hold_expiration)
+                              if capacity_hold_binding is not None else reservation)
+                    conn.commit()
+                    return result
 
                 conn.rollback()
                 return None

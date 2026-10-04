@@ -281,25 +281,54 @@ async def test_container_provisioning_preserves_settled_lease_binding(
 
 @pytest.mark.asyncio
 async def test_capability_timeout_keeps_real_allocation_occupied(client, monkeypatch):
+    import json
+    import sqlite3
+    import time
+    import uuid
+    from market_storefront.utils import capacity_holds
+    seller = '0x' + '33' * 20
+    buyer = '0x' + '44' * 20
+    escrow_uid = '0x' + 'ab' * 32
+    negotiation_id = 'neg_' + uuid.uuid4().hex
+    env = {'AEX_CAPABILITY_DIRECTORY': '/run/aex/capabilities'}
+    proposal = dict(chain_name='base_sepolia', escrow_address='0x' + '11' * 20,
+        fields={}, expiration_unix=int(time.time()) + 5000)
     await _seed_compute_pool(client)
+    await _seed_compute_listings(client, max_gpu_count=1)
     await client.upsert_resource(
-        resource_id="pool-h200-1", resource_type="compute.gpu", resource_subtype="h200",
+        resource_id="pool-h200-1", resource_type="compute.container", resource_subtype="h200",
         unit="count", value=1, state="available", attributes={
             "gpu_model": "H200", "region": "California, US", "vm_host": "host-1",
             "virtualization_type": "container",
             "container_image": "registry.example/runtime@sha256:" + "a" * 64,
         },
     )
-    await client.insert_escrow(escrow_uid="escrow-timeout", negotiation_id="neg-timeout",
+    with sqlite3.connect(client.db_path) as con:
+        con.execute('''INSERT INTO negotiation_threads (negotiation_id,buyer,terminal_state,our_listing_id,
+            agreed_price,agreed_duration_seconds,buyer_escrow_proposal) VALUES (?,?,'success','listing-1x','100',3600,?)''',
+            (negotiation_id, buyer, json.dumps(proposal)))
+    binding = dict(schema=1, requestDigest='a'*64, approvalDigest='sha256:'+'b'*64, policyRevision='sha256:'+'c'*64,
+        checkoutHoldId=str(uuid.uuid4()), checkoutIntentDigest='d'*64, ownerWallet='0x'+'55'*20,
+        buyer=buyer,seller=seller,listingId='listing-1x',negotiationId=negotiation_id,
+        configDigest=capacity_holds.digest(env),proposalDigest=capacity_holds.digest(proposal),amountAtomic='100',
+        durationSeconds=3600,chainId=84532)
+    monkeypatch.setattr('market_storefront.utils.sqlite_client.settings', SimpleNamespace(wallet=SimpleNamespace(address=seller)))
+    held = await client.reserve_available_compute_vm(listing_id='listing-1x', capacity_hold_binding=binding)
+    assert held is not None
+    assert capacity_holds.transition(client,negotiation_id=negotiation_id,hold_id=held['holdId'],
+        buyer=buyer,seller=seller,action='arm')['paymentAuthorized']
+    capacity_holds.consume(client.db_path,hold_id=held['holdId'],negotiation_id=negotiation_id,
+        escrow_uid=escrow_uid,container_env=env,seller=seller)
+    await client.insert_escrow(escrow_uid=escrow_uid, negotiation_id=negotiation_id,
                               chain_name="base_sepolia", escrow_address="0x" + "11" * 20)
     monkeypatch.setattr(action_executor, "get_sqlite_client", lambda: client)
     provision = AsyncMock(side_effect=TimeoutError("reply lost after create request"))
     monkeypatch.setattr(action_executor, "_do_provision", provision)
     alkahest = MagicMock()
     result = await action_executor.fulfill_compute_obligation(
-        client=alkahest, escrow_uid="escrow-timeout", ssh_public_key="",
+        client=alkahest, escrow_uid=escrow_uid, ssh_public_key="",
         oracle_address="0x" + "33" * 20, order=_compute_listing(), duration_seconds=3600,
-        listing_id="listing-1", container_env={"AEX_CAPABILITY_DIRECTORY": "/run/aex/capabilities"},
+        listing_id="listing-1x", container_env=env,
     )
     assert result["status"] == "uncertain"
     selected = await client.select_available_compute_vm(
@@ -310,10 +339,10 @@ async def test_capability_timeout_keeps_real_allocation_occupied(client, monkeyp
     with sqlite3.connect(client.db_path) as db:
         state, target = db.execute(
             "SELECT state, vm_target FROM compute_allocations WHERE escrow_uid = ?",
-            ("escrow-timeout",),
+            (escrow_uid,),
         ).fetchone()
     assert state == "held"
-    assert target == "tenant-" + uuid.uuid5(uuid.NAMESPACE_URL, "scm-container-lease:escrow-timeout").hex
+    assert target == "tenant-" + uuid.uuid5(uuid.NAMESPACE_URL, "scm-container-lease:" + escrow_uid).hex
     alkahest.string_obligation.do_obligation.assert_not_called()
 
 

@@ -57,6 +57,19 @@ class NegotiateContinueResponse(BaseModel):
     reason: str | None = None
 
 
+class CapacityHoldRequest(BaseModel):
+    """Exact original binding; never raw tenant environment or controller keys."""
+    buyer_address: str
+    binding: dict[str, Any]
+    model_config = {"extra": "forbid"}
+
+
+class CapacityHoldActionRequest(BaseModel):
+    buyer_address: str
+    action: Literal['arm', 'cancel']
+    model_config = {"extra": "forbid"}
+
+
 class NegotiationSummary(BaseModel):
     negotiation_id: str
     our_listing_id: str

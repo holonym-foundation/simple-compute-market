@@ -742,7 +742,6 @@ async def fulfill_compute_obligation(
     reserved_resource_id: str | None = None
     reserved_vm_host: str | None = None
     capability_request = isinstance(container_env, dict) and "AEX_CAPABILITY_DIRECTORY" in container_env
-    provisioning_dispatched = False
     # Retries of one settled escrow must not select a different container name.
     vm_target = (f"tenant-{uuid.uuid5(uuid.NAMESPACE_URL, 'scm-container-lease:' + escrow_uid).hex}"
                  if capability_request else f"tenant-{uuid.uuid4().hex[:4]}")
@@ -789,11 +788,18 @@ async def fulfill_compute_obligation(
 
     try:
         sqlite_client = get_sqlite_client()
-        reserved = await sqlite_client.reserve_available_compute_vm(
-            required_attributes=required_attributes or None,
-            listing_id=listing_id or order_id,
-            escrow_uid=escrow_uid,
-        )
+        if capability_request:
+            from .capacity_holds import consumed_reservation
+            reserved = await asyncio.to_thread(consumed_reservation, sqlite_client.db_path,
+                escrow_uid=escrow_uid, listing_id=listing_id or order_id,
+                duration_seconds=duration_seconds, container_env=container_env,
+                seller=oracle_address.lower())
+        else:
+            reserved = await sqlite_client.reserve_available_compute_vm(
+                required_attributes=required_attributes or None,
+                listing_id=listing_id or order_id,
+                escrow_uid=escrow_uid,
+            )
         if not reserved:
             raise RuntimeError("No available compute VM matched required attributes")
         reserved_allocation_id = str(reserved.get("allocation_id")) if reserved.get("allocation_id") else None
@@ -872,7 +878,6 @@ async def fulfill_compute_obligation(
                 demand_hex=order_bytes.hex(), duration_seconds=duration_seconds,
                 params=dataclasses.asdict(request.to_ansible_job_params(reserved_vm_host)),
             )
-        provisioning_dispatched = True
         provision_result = await _do_provision(
             ssh_public_key,
             vm_host=reserved_vm_host,
@@ -900,7 +905,7 @@ async def fulfill_compute_obligation(
         else:
             connection_details = provision_result
     except Exception as error:
-        if capability_request and provisioning_dispatched:
+        if capability_request and reserved_allocation_id:
             # A timeout, lost reply, failed playbook, or missing receipt does not
             # prove the remote container absent. Hold the existing allocation;
             # never replace it or claim settlement success on uncertainty.

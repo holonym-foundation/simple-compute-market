@@ -183,6 +183,84 @@ master [AEX programme #2695](https://github.com/holonym-foundation/internal-docs
 
 ## Rollout boundaries
 
+### Pre-escrow capacity hold (new capability seller source)
+
+The buyer-facing negotiation controller now reserves a real `compute_allocations`
+slot **before** escrow payment. This is not the admin-only manual reservation hook,
+an availability count, or AEX's separate checkout hold. The new
+`buyer_capacity_holds` table is initialized with the seller schema; no historical
+hold/owner classification is inferred or backfilled. No deployed database is
+changed by publishing this source.
+
+The exact immutable binding has `schema:1`, `chainId:84532`, `requestDigest`
+(AEX original request, bare lowercase SHA-256), `approvalDigest`, `policyRevision`,
+`configDigest`, `proposalDigest` (each `sha256:` plus lowercase SHA-256),
+`checkoutHoldId` (UUIDv4), `checkoutIntentDigest` (bare SHA-256), `ownerWallet`,
+`buyer`, `seller` (canonical nonzero lowercase addresses), `listingId`,
+`negotiationId` (`neg_` plus UUIDv4's 32 lowercase hex digits, matching the actual
+negotiation producer), `amountAtomic` (positive decimal string, no USD conversion),
+and `durationSeconds` (1–3600). Unknown fields refuse. The checkout references
+remain opaque seller-side; only AEX can prove that its independently authenticated
+controller and PR381 checkout intent are current. A buyer signature cannot certify
+the controller's consent or transform a checkout reference into seller capacity.
+
+The seller compares authenticated negotiation ownership, terminal agreement,
+amount/duration and exact persisted proposal skeleton under the allocation lock.
+`proposalDigest` hashes the **persisted skeleton**, not a reconstructed final
+amount/arbiter tuple; the agreed amount is separate. `configDigest` hashes the
+exact final tenant environment, which is compared at consumption and fulfillment.
+Canonical JSON uses recursively sorted ASCII object keys, UTF-8 string values,
+compact separators and safe integer numbers only. Raw environment is not in the
+receipt. The buyer's independently reviewed escrow contract/token/arbiter/demand
+and expiration remain necessary: this hash is not a substitute for that authority.
+The accepted proposal's expiration must equal the actual attestation deadline,
+not merely be in the future.
+
+The private authenticated protocol is:
+
+* `POST /api/v1/negotiate/{negotiationId}/capacity-hold` with
+  `{buyer_address,binding}`. EIP-191 operation `capacity_hold_reserve` signs
+  resource `{negotiationId}:{sha256(binding)}` using the existing timestamp format.
+* `GET /api/v1/negotiate/{negotiationId}/capacity-hold/{holdId}?buyer_address=…`
+  uses operation `capacity_hold_status`, resource `{negotiationId}:{holdId}`.
+* `POST` to that same hold path takes `{buyer_address,action:"arm"|"cancel"}`;
+  operation is `capacity_hold_arm` or `capacity_hold_cancel`, same resource.
+
+Receipt: `{schema:1,holdId,binding,allocationId,resourceId,status,expiresAt,escrowUid}`.
+Hold/allocation IDs are UUIDv4; resource ID is the existing inventory identity.
+Status/action replies additionally contain `paymentAuthorized` and `retry:false`.
+The former is true **only** for the first successfully acknowledged `held` →
+`payment_pending` transition. It is seller bookkeeping, not wallet/signer approval.
+Before any approval/escrow signing, the buyer must persist that exact receipt and
+apply its independent source-owned policy and one-shot operation journal. After a
+lost arm/transaction acknowledgement, observe/reconcile the original identity;
+never treat a repeated arm response as authorization to pay again.
+
+Hold plus allocation are committed in one `BEGIN IMMEDIATE` transaction. Same
+request/negotiation retries return the original receipt without extending its
+maximum five-minute TTL. Unarmed expiry/cancel releases only that allocation;
+allocation attempts also reap expired unarmed holds under the same lock.
+`payment_pending` never expires or cancels automatically, even if no escrow UID
+has arrived. It requires independent reconciliation before any future release
+mechanism; this source supplies no payment-absence assertion or automatic refund.
+
+Capability `POST /settle/{escrowUid}` requires `capacity_hold_id` and an empty SSH
+key. After the existing chain verification, it consumes that exact armed hold,
+binds its original allocation to the verified escrow, and provisions without a
+second allocation. Changed config/owner/proposal/allocation fails closed. A hold
+cannot be downgraded into non-capability settlement by removing the environment
+marker. Historical non-capability calls without a hold retain their existing
+allocation path. Prepared/pending and lost-reply behavior remain non-settled.
+
+Authenticated HTTP consumer/signature tests and real temporary SQLite tests run
+in the existing Storefront CI suite. Standalone stdlib checks execute the actual
+allocator/settlement/fulfillment bodies with synthetic dependencies. They do not
+prove installed endpoints, AEX checkout integration, independent signer policy,
+escrow funding, receipt authenticity over an untrusted transport, or live capacity.
+Buyer/fleet settlement producers and paired-image smoke fixtures must explicitly
+carry/seed this hold before upgrading to this seller source. Existing installed
+images and historical seller databases remain untouched.
+
 Preparation needs no schema migration: status is a string and preparation metadata
 lives in the existing JSON params; `_build_params` passes only explicit Ansible fields.
 The seller continuation adds a private `capability_settlement_continuations` table

@@ -87,6 +87,7 @@ class SettleController:
                 negotiation_id=body.negotiation_id,
                 ssh_public_key=body.ssh_public_key,
                 container_env=body.container_env,
+                capacity_hold_id=body.capacity_hold_id,
                 sqlite_client=self._db,
                 alkahest_client=alkahest,
                 chain_name=body.chain_name,

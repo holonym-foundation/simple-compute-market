@@ -460,6 +460,8 @@ async def verify_escrow_for_settlement(
         raise EscrowVerificationError(
             f"Escrow {escrow_uid} has no expirationTime — refusing to settle"
         )
+    if escrow_proposal is not None and int(att.expiration_time) != escrow_proposal.expiration_unix:
+        raise EscrowVerificationError("Escrow expiration differs from the accepted proposal")
 
     # Dict-compare the canonical ObligationData. One check covers every
     # field the contract enforces at collection time (arbiter, demand,

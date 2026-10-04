@@ -282,13 +282,14 @@ class ContractTests(unittest.TestCase):
         source = ast.parse((UTILS / 'sqlite_client.py').read_text())
         schema = next(n.value for n in ast.walk(source) if isinstance(n, ast.Constant)
                       and isinstance(n.value, str) and 'CREATE TABLE IF NOT EXISTS escrows (' in n.value)
-        config = SimpleNamespace(CHAINS={'base_sepolia': SimpleNamespace(alkahest_address_config_path=None)},
+        config = SimpleNamespace(CHAINS={'base_sepolia': SimpleNamespace(chain_id=84532, alkahest_address_config_path=None)},
                                  settings=SimpleNamespace(wallet=SimpleNamespace(address='synthetic')))
         verifier = SimpleNamespace(verify_escrow_for_settlement=AsyncMock())
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'seller.db'
             with sqlite3.connect(path) as con:
                 con.execute(schema)
+                con.execute('CREATE TABLE buyer_capacity_holds (negotiation_id TEXT)')
             con.close()
             db = SimpleNamespace(db_path=path,
                 load_negotiation_thread_row=AsyncMock(return_value={'terminal_state': 'success', 'agreed_price': 1, 'our_listing_id': 'listing'}),
@@ -300,14 +301,20 @@ class ContractTests(unittest.TestCase):
                 with handoff.connection(path, readonly=True) as committed:
                     mode = committed.execute('SELECT settlement_mode FROM escrows WHERE escrow_uid=?', (expected[-1][0],)).fetchone()[0]
                     self.assertEqual(mode, expected[-1][1])
-            namespace['asyncio'] = SimpleNamespace(create_task=schedule)
+            namespace['asyncio'] = SimpleNamespace(create_task=schedule, to_thread=asyncio.to_thread)
+            # This fixture isolates the durable original-mode insertion. The
+            # real allocation/armed-hold boundary has its own SQLite composition
+            # tests; supply that prerequisite explicitly, never legacy fallback.
             with patch.dict(sys.modules, {'market_storefront.utils.config': config,
-                    'market_storefront.utils.escrow_verification': verifier}):
+                    'market_storefront.utils.escrow_verification': verifier}), \
+                    patch('market_storefront.utils.capacity_holds.consume', return_value='fixture-allocation') as consume:
                 for uid, env, mode in [('cap', {'AEX_CAPABILITY_DIRECTORY': '/run/exact'}, 'capability'),
                                        ('legacy', {}, 'legacy')]:
                     expected.append((uid, mode))
                     asyncio.run(namespace['start_settlement_job'](escrow_uid=uid, negotiation_id='neg', ssh_public_key='',
-                        container_env=env, sqlite_client=db, alkahest_client=object(), chain_name='base_sepolia'))
+                        container_env=env, capacity_hold_id=ADMISSION if mode=='capability' else None,
+                        sqlite_client=db, alkahest_client=object(), chain_name='base_sepolia'))
+                consume.assert_called_once()
             self.assertEqual(namespace['_run_settlement_job_bg'].call_count, 2)
 
     def test_strict_scope_and_public_result(self):

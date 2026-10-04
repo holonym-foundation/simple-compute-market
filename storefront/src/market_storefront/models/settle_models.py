@@ -10,6 +10,8 @@ class SettleRequest(BaseModel):
     negotiation_id: str
     ssh_public_key: str
     buyer_address: str
+    capacity_hold_id: str | None = Field(default=None,
+        description='Required armed pre-escrow hold for capability deployments; never creates or replaces a hold.')
     container_env: dict[str, str] | None = Field(
         default=None,
         description=(
