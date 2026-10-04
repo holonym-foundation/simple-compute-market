@@ -706,7 +706,7 @@ async def fulfill_compute_obligation(
     listing_id: str | None = None,
     seller_order_id: str | None = None,
 ):
-    """Provision compute and fulfill the obligation. Falls back to simulated flow if no client.
+    """Provision compute and fulfill a real obligation; never simulate settlement.
 
     ``duration_seconds`` is the buyer's negotiated lease window — passed
     through from `start_settlement_job`, which reads it off the
@@ -716,6 +716,14 @@ async def fulfill_compute_obligation(
     When fulfillment lands, pushes the fulfillment_uid to the registry's
     update endpoint.
     """
+    # Configuration absence is not a successful settlement. Refuse before
+    # reserving capacity, writing credentials, creating a tenant or scheduling
+    # expiry. Tests that exercise provisioning must supply a synthetic client,
+    # not teach the runtime to fabricate a fulfillment identifier.
+    if client is None or not oracle_address or not oracle_address.strip():
+        return {"status": "error", "escrow_uid": escrow_uid,
+                "message": "Settlement client and oracle are required before provisioning",
+                "connection_details": None, "ssh_public_key": ssh_public_key}
     fulfillment_uid = None
     connection_details: str | None = None
     reserved_allocation_id: str | None = None
@@ -1017,11 +1025,7 @@ async def fulfill_compute_obligation(
 
     asyncio.create_task(_schedule_shutdown_best_effort())
 
-    if not client or not oracle_address:
-        # Demo fallback: skip on-chain, return simulated fulfillment uid
-        fulfillment_uid = f"fulfill_{uuid.uuid4()}"
-        logger.info("[ALKAHEST] (Simulated) Fulfilled compute obligation without on-chain client.")
-    else:
+    if client is not None:
         try:
             from service.signing import (
                 external_tx_submit_enabled,
