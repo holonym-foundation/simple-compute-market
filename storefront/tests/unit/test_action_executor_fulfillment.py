@@ -224,7 +224,14 @@ async def test_reservation_closes_oversized_dynamic_listings(client, monkeypatch
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lease_id", ["0x" + "ab" * 32, None])
-async def test_container_provisioning_preserves_settled_lease_binding(monkeypatch, lease_id):
+@pytest.mark.parametrize("capability_env, expected_retries", [
+    ({}, None),
+    ({"AEX_CAPABILITY_DIRECTORY": "/run/aex-capabilities"}, 0),
+    ({"AEX_CAPABILITY_DIRECTORY": ""}, 0),
+])
+async def test_container_provisioning_preserves_settled_lease_binding(
+    monkeypatch, lease_id, capability_env, expected_retries,
+):
     transport = MagicMock()
     transport.__aenter__ = AsyncMock(return_value=transport)
     transport.__aexit__ = AsyncMock(return_value=None)
@@ -235,7 +242,7 @@ async def test_container_provisioning_preserves_settled_lease_binding(monkeypatc
     factory = MagicMock(return_value=transport)
     monkeypatch.setattr(action_executor, "ProvisioningClient", factory)
     # A buyer's environment cannot select the provisioning request's lease ID.
-    env = {"AEX_AGENT_ID": "test-agent", "lease_id": "buyer-controlled"}
+    env = {"AEX_AGENT_ID": "test-agent", "lease_id": "buyer-controlled", **capability_env}
     submitted = AsyncMock()
     result = await action_executor._do_provision(
         "", vm_host="host-1", vm_target="tenant-test", virtualization_type="container",
@@ -247,9 +254,16 @@ async def test_container_provisioning_preserves_settled_lease_binding(monkeypatc
     assert request.lease_id == lease_id
     assert request.container_env == env
     assert request.container_target == "tenant-test"
+    # The prepared-service guard checks the wire payload before SCM can
+    # normalize its stored job. Capability presence must send integer zero.
+    payload = request.model_dump(mode="json")
+    assert payload["max_retries"] == expected_retries
+    if expected_retries == 0:
+        assert type(payload["max_retries"]) is int
     params = request.to_ansible_job_params(host)
     assert params.lease_id == lease_id
     assert params.container_env == env
+    assert params.max_retries == expected_retries
     assert result["lease_id"] == lease_id
     submitted.assert_awaited_once_with("job-1")
     transport.create_container.assert_awaited_once()

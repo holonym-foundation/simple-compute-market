@@ -206,6 +206,10 @@ async def _do_provision(
                 _req["container_image"] = container_image
             if container_env:
                 _req["container_env"] = container_env
+            if isinstance(container_env, dict) and "AEX_CAPABILITY_DIRECTORY" in container_env:
+                # Preparation guards inspect the request before the service
+                # normalizes stored jobs. Never enable retries for this path.
+                _req["max_retries"] = 0
             # Bind the workload/volume and capability mount to the seller's
             # settled escrow, never a buyer-controlled environment field.
             if lease_id is not None:
