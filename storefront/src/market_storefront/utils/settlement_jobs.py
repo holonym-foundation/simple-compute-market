@@ -191,8 +191,13 @@ async def start_settlement_job(
     )
     if not inserted:
         # Already running or finished — return current state, idempotent.
+        existing = await sqlite_client.load_escrow(escrow_uid=escrow_uid)
+        if not existing or existing.get("negotiation_id") != negotiation_id:
+            raise ValueError("Escrow is not bound to this negotiation")
         await reconcile_retained_settlement(sqlite_client=sqlite_client, escrow_uid=escrow_uid)
         existing = await sqlite_client.load_escrow(escrow_uid=escrow_uid)
+        if not existing or existing.get("negotiation_id") != negotiation_id:
+            raise ValueError("Escrow negotiation binding changed")
         logger.info(
             "[SETTLE_JOB] Job already exists for escrow %s: status=%s",
             escrow_uid, (existing or {}).get("status"),

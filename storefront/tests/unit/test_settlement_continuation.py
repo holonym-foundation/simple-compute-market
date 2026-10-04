@@ -192,6 +192,15 @@ class ContinuationTests(unittest.IsolatedAsyncioTestCase):
                                     alkahest_client=object(), chain_name="base_sepolia")
                 self.assertEqual(result["status"], "provisioning")
                 self.assertIn("provisioned_pending_settlement", result["reason"])
+            # A competing owner can win the INSERT after the controller's
+            # preflight. The actual conflict branch must refuse BEFORE GET.
+            db.load_escrow = AsyncMock(return_value={"negotiation_id": "foreign-negotiation"})
+            forbidden_observer = AsyncMock()
+            namespace["reconcile_retained_settlement"] = forbidden_observer
+            with self.assertRaisesRegex(ValueError, "not bound"):
+                await start(escrow_uid=UID, negotiation_id="neg-1", ssh_public_key="", sqlite_client=db,
+                            alkahest_client=object(), chain_name="base_sepolia")
+            forbidden_observer.assert_not_awaited()
         get_job.assert_awaited_once_with(JOB)
         self.assert_fenced()
 

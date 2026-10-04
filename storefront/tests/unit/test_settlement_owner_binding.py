@@ -115,12 +115,28 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
             buyer_auth=buyer_auth, require_settlement_owner=require, HTTPException=HTTPException,
             _container=chain, JSONResponse=lambda **kwargs: kwargs))
         with patch("market_storefront.utils.settlement_jobs.start_settlement_job", new=AsyncMock(
-                return_value={"escrow_uid": "escrow", "status": "provisioning"})) as start:
+                return_value={"escrow_uid": "escrow", "negotiation_id": "neg-1", "status": "provisioning"})) as start:
             response = await endpoint(SimpleNamespace(_db=self.db), "escrow", SimpleNamespace(
                 buyer_address=self.owner.address, negotiation_id="neg-1", chain_name="base_sepolia",
                 ssh_public_key="", container_env=None), self.signed(self.owner, "settle_escrow", "escrow"))
             self.assertEqual(response["status_code"], 202)
             start.assert_awaited_once()
+
+    async def test_insert_race_cannot_return_foreign_settlement_credentials(self):
+        await self.negotiate()
+        self.db.load_escrow.return_value = None  # preflight precedes competing INSERT
+        require = function("controllers/settle_controller.py", "require_settlement_owner", dict(buyer_auth=buyer_auth))
+        endpoint = function("controllers/settle_controller.py", "settle_escrow", dict(
+            buyer_auth=buyer_auth, require_settlement_owner=require, HTTPException=HTTPException,
+            _container=SimpleNamespace(get_alkahest_client=lambda _: object())))
+        foreign = {"escrow_uid": "escrow", "negotiation_id": "other-owner", "status": "ready",
+                   "tenant_credentials": {"password": "must-not-disclose"}}
+        with patch("market_storefront.utils.settlement_jobs.start_settlement_job", new=AsyncMock(return_value=foreign)):
+            with self.assertRaises(HTTPException) as denied:
+                await endpoint(SimpleNamespace(_db=self.db), "escrow", SimpleNamespace(
+                    buyer_address=self.owner.address, negotiation_id="neg-1", chain_name="base_sepolia",
+                    ssh_public_key="", container_env=None), self.signed(self.owner, "settle_escrow", "escrow"))
+            self.assertEqual(denied.exception.status_code, 404)
 
     async def test_legacy_route_label_never_supplies_buyer_authority(self):
         with sqlite3.connect(self.path) as con:

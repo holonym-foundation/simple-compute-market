@@ -4,9 +4,9 @@ Uses ``StorefrontClient.negotiate_new()`` and ``negotiate_continue()``
 via ``httpx.ASGITransport`` — following the canonical client pattern
 documented in ARCHITECTURE.md.
 
-These protocol endpoints use EIP-191 buyer signatures. Auth is bypassed
-in tests via ``unittest.mock.patch.object(buyer_auth, "_verify", return_value=None)``.
-Tests focus on Pydantic validation, routing correctness, and DB interaction.
+These protocol endpoints use real synthetic EIP-191 signatures. The policy
+loader is pinned to built-in guards and bisection; no file policies, model,
+inference or network policy is loaded. Tests cover routing and DB interaction.
 """
 from __future__ import annotations
 
@@ -17,13 +17,14 @@ import httpx
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
+from eth_account import Account
 
 import market_storefront.container as _container
 from market_storefront.controllers.negotiate_controller import router as negotiate_router
-from market_storefront.middleware import buyer_auth
 from storefront_client import StorefrontClient, StorefrontClientError
 
-_BUYER = "0xBuyer00000000000000000000000000000000AB"  # 42 chars
+_TEST_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+_BUYER = Account.from_key(_TEST_KEY).address
 _TOKEN = "0x0000000000000000000000000000000000000001"
 
 
@@ -84,6 +85,8 @@ async def _seed_listing(
 async def client(db):
     import market_policy.negotiation_thread as _nt_module
     from market_policy.identity import Identity
+    from market_policy.negotiation_middleware import load_negotiation_chain
+    from market_storefront.utils import sync_negotiation
 
     _nt_module._thread_store = None
     _nt_module.get_thread_store(
@@ -104,11 +107,12 @@ async def client(db):
     app.include_router(negotiate_router)
 
     transport = httpx.ASGITransport(app=app)
-    with patch.object(buyer_auth, "_verify", return_value=None):
+    with patch.object(sync_negotiation, "_load_storefront_chain", side_effect=lambda: load_negotiation_chain(
+            ["has_matching_inventory_guard", "escrow_shape_guard", "bisection"])):
         async with StorefrontClient(
             "http://test",
             transport=transport,
-            private_key="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+            private_key=_TEST_KEY,
             ) as c:
             yield c, db
 
@@ -154,6 +158,8 @@ class TestNegotiateNew:
         )
         assert "negotiation_id" in result
         assert result["action"] in ("accept", "counter", "exit")
+        thread = await db.load_negotiation_thread_row(negotiation_id=result["negotiation_id"])
+        assert thread["buyer"] == _BUYER.lower()
 
     async def test_zero_max_duration_means_unlimited(self, client, db):
         c, db = client

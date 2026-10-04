@@ -99,6 +99,9 @@ class SettleController:
             logger.error("[SETTLE] start_settlement_job failed: %s", exc, exc_info=True)
             raise HTTPException(status_code=500, detail=str(exc))
 
+        if (result.get("escrow_uid") != escrow_uid
+                or result.get("negotiation_id") != body.negotiation_id):
+            raise HTTPException(status_code=404, detail="Settlement not found for this buyer")
         serialized = serialize_settlement_job(result) if "created_at" in result else result
         status_code = 200 if result.get("status") in ("ready", "failed") else 202
         return JSONResponse(content=serialized, status_code=status_code)
