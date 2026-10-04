@@ -50,6 +50,7 @@ class AdminSettleService:
         self,
         *,
         escrow_uid: str,
+        negotiation_id: str,
         listing_id: str,
         seller_wallet: str,
         agreed_price: int,
@@ -71,6 +72,13 @@ class AdminSettleService:
         if not listing:
             raise ValueError(f"Listing {listing_id!r} not found")
 
+        thread = await self._db.load_negotiation_thread_row(negotiation_id=negotiation_id)
+        if not thread or thread.get("our_listing_id") != listing_id:
+            raise ValueError("Negotiation not found for this listing")
+        from service.schemas import EscrowProposal
+        proposal_raw = thread.get("buyer_escrow_proposal")
+        proposal = EscrowProposal.model_validate(proposal_raw) if proposal_raw is not None else None
+
         alkahest = self._alkahest_clients.get(chain_name)
         if alkahest is None:
             return {
@@ -91,6 +99,7 @@ class AdminSettleService:
         try:
             await verify_escrow_for_settlement(
                 escrow_uid=escrow_uid,
+                expected_buyer=thread.get("buyer"),
                 seller_wallet=seller_wallet,
                 agreed_price=agreed_price,
                 agreed_duration_seconds=agreed_duration_seconds,
@@ -98,6 +107,7 @@ class AdminSettleService:
                 alkahest_client=alkahest,
                 chain_name=chain_name,
                 alkahest_address_config_path=chain_cfg.alkahest_address_config_path,
+                escrow_proposal=proposal,
             )
         except EscrowVerificationError as exc:
             return {"valid": False, "escrow_uid": escrow_uid, "reason": str(exc)}

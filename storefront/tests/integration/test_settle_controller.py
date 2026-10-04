@@ -14,6 +14,7 @@ real SQLiteClient (tmp_path), real AdminSettleController wired via container.
 from __future__ import annotations
 
 from datetime import datetime
+import sqlite3
 from typing import AsyncIterator
 
 import httpx
@@ -67,6 +68,12 @@ async def _seed_listing(db: SQLiteClient, listing_id: str) -> None:
         max_duration_seconds=3600,
         seller="http://seller:8001",
     )
+    with sqlite3.connect(db.db_path) as con:
+        con.execute("""INSERT INTO negotiation_threads
+            (negotiation_id, our_listing_id, our_agent_id, their_agent_id,
+             status, created_at, updated_at, buyer)
+            VALUES ('neg-verify', ?, 'seller', 'buyer', 'active', ?, ?, ?)""",
+            (listing_id, now, now, "0x" + "22" * 20))
 
 
 @pytest_asyncio.fixture
@@ -104,6 +111,7 @@ class TestVerifySettle:
         with pytest.raises(StorefrontClientError) as exc_info:
             await c.verify_settle(
                 "some-escrow-uid",
+                negotiation_id="neg-verify",
                 seller_wallet="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
                 agreed_price=5000,
                 agreed_duration_seconds=3600,
@@ -120,6 +128,7 @@ class TestVerifySettle:
         # which the controller maps to valid=False (not 500).
         result = await c.verify_settle(
             "fake-escrow-uid",
+            negotiation_id="neg-verify",
             seller_wallet="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
             agreed_price=5000,
             agreed_duration_seconds=3600,
@@ -136,6 +145,7 @@ class TestVerifySettle:
         await _seed_listing(db, "settle-verify-uid")
         result = await c.verify_settle(
             "echo-this-uid",
+            negotiation_id="neg-verify",
             seller_wallet="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
             agreed_price=1000,
             agreed_duration_seconds=3600,
@@ -149,6 +159,7 @@ class TestVerifySettle:
         await _seed_listing(db, "settle-verify-nowrite")
         await c.verify_settle(
             "no-write-uid",
+            negotiation_id="neg-verify",
             seller_wallet="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
             agreed_price=1000,
             agreed_duration_seconds=3600,

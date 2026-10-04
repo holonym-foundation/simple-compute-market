@@ -25,6 +25,7 @@ from market_storefront.utils.escrow_verification import (
     _normalize_bytes,
     _normalize_obligation_data,
     verify_escrow_for_settlement,
+    erc20_escrow_schema_uid,
 )
 
 
@@ -39,6 +40,116 @@ ARBITER_LOWER = ARBITER.lower()
 _DUMMY_CLIENT = object()
 CHAIN = "anvil"
 CONFIG_PATH = "/tmp/addresses.json"
+ESCROW_UID = "0x" + "ab" * 32
+ESCROW_ADDRESS = "0x" + "11" * 20
+
+
+@pytest.fixture(autouse=True)
+def configured_escrow(monkeypatch):
+    # Synthetic server configuration, never a getter/authentication bypass.
+    monkeypatch.setattr("service.clients.alkahest.get_erc20_escrow_obligation_nontierable",
+                        lambda *args, **kwargs: ESCROW_ADDRESS)
+
+
+def _verification_kwargs():
+    return dict(escrow_uid=ESCROW_UID, expected_buyer=BUYER,
+                seller_wallet=SELLER, agreed_price=1000, agreed_duration_seconds=3600,
+                listing=_good_listing(), alkahest_client=_DUMMY_CLIENT, chain_name=CHAIN,
+                alkahest_address_config_path=CONFIG_PATH, now_unix=1_700_000_000)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [
+    ("uid", "0x" + "cd" * 32), ("uid", "0xdead"), ("uid", "0x" + "00" * 32),
+    ("recipient", SELLER), ("recipient", None), ("recipient", "0x" + "00" * 20),
+    ("attester", BUYER), ("attester", "not-an-address"),
+    ("schema", "0x" + "cd" * 32), ("schema", None),
+    ("ref_uid", ESCROW_UID), ("ref_uid", "0x0"),
+    ("revocable", False), ("revocable", 1), ("revocable", "true"),
+    ("time", True), ("expiration_time", "1800000000"),
+    ("revocation_time", -1), ("expiration_time", 2**64),
+])
+async def test_rejects_forged_or_malformed_envelope(field, value):
+    with pytest.raises(EscrowVerificationError):
+        await verify_escrow_for_settlement(**_verification_kwargs(),
+            **_make_seams(_good_obligation(**{field: value})))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["uid", "recipient", "attester", "schema", "ref_uid",
+                                      "revocable", "time", "expiration_time", "revocation_time"])
+async def test_rejects_missing_envelope_field(field):
+    from types import SimpleNamespace
+    decoded = _good_obligation()
+    data = vars(decoded["attestation"]).copy()
+    del data[field]
+    decoded["attestation"] = SimpleNamespace(**data)
+    with pytest.raises(EscrowVerificationError):
+        await verify_escrow_for_settlement(**_verification_kwargs(), **_make_seams(decoded))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [
+    ("expected_buyer", None), ("expected_buyer", "https://buyer.invalid"),
+    ("expected_buyer", "0x" + "00" * 20), ("escrow_uid", "0xdead"),
+    ("escrow_uid", "0x" + "00" * 32),
+    ("escrow_uid", "0x" + "AB" * 32),
+])
+async def test_invalid_identity_refused_before_chain_read(field, value):
+    from unittest.mock import AsyncMock
+    kwargs = _verification_kwargs()
+    kwargs[field] = value
+    getter = AsyncMock()
+    with pytest.raises(EscrowVerificationError):
+        await verify_escrow_for_settlement(**kwargs, get_obligation_fn=getter)
+    getter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_proposal_chain_mismatch_refused_before_read():
+    from unittest.mock import AsyncMock
+    kwargs = _verification_kwargs()
+    kwargs["escrow_proposal"] = EscrowProposal(chain_name="base_sepolia",
+        escrow_address=ESCROW_ADDRESS, literal_fields={"token": TOKEN}, expiration_unix=1_800_000_000)
+    getter = AsyncMock()
+    with pytest.raises(EscrowVerificationError, match="chain differs"):
+        await verify_escrow_for_settlement(**kwargs, get_obligation_fn=getter)
+    getter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [
+    ("chain_name", "base_sepolia"), ("escrow_address", BUYER),
+])
+async def test_listing_deployment_mismatch_refused_before_read(field, value):
+    from unittest.mock import AsyncMock
+    kwargs = _verification_kwargs()
+    kwargs["listing"]["accepted_escrows"][0][field] = value
+    getter = AsyncMock()
+    with pytest.raises(EscrowVerificationError):
+        await verify_escrow_for_settlement(**kwargs, get_obligation_fn=getter)
+    getter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("address", [None, "", "0x" + "00" * 20, "0x1234"])
+async def test_missing_configured_attester_never_reads_chain(monkeypatch, address):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr("service.clients.alkahest.get_erc20_escrow_obligation_nontierable",
+                        lambda *args, **kwargs: address)
+    getter = AsyncMock()
+    with pytest.raises(EscrowVerificationError, match="configured escrow address"):
+        await verify_escrow_for_settlement(**_verification_kwargs(), get_obligation_fn=getter)
+    getter.assert_not_awaited()
+
+
+def test_schema_uid_is_packed_with_resolver_and_revocable():
+    from eth_utils import keccak
+    from eth_abi.packed import encode_packed
+    packed = encode_packed(["string", "address", "bool"], [
+        "address arbiter, bytes demand, address token, uint256 amount", ESCROW_ADDRESS, True])
+    assert erc20_escrow_schema_uid(ESCROW_ADDRESS) == "0x" + keccak(packed).hex()
+    assert erc20_escrow_schema_uid(BUYER) != erc20_escrow_schema_uid(ESCROW_ADDRESS)
 
 
 def _encode_recipient(address: str) -> bytes:
@@ -53,6 +164,13 @@ class _FakeAttestationEnvelope:
     ``decoded["attestation"]`` (the EAS envelope)."""
     revocation_time: int = 0
     expiration_time: int = 1_800_000_000  # absolute UTC unix far enough out
+    uid: str = ESCROW_UID
+    recipient: str = BUYER
+    attester: str = ESCROW_ADDRESS
+    schema: str = erc20_escrow_schema_uid(ESCROW_ADDRESS)
+    ref_uid: str = "0x" + "00" * 32
+    revocable: bool = True
+    time: int = 1_600_000_000
 
 
 @dataclass
@@ -245,7 +363,7 @@ class TestVerifyHappyPath:
     async def test_passes_when_everything_matches(self):
         att = _good_obligation()
         await verify_escrow_for_settlement(
-            escrow_uid="0xdead",
+            escrow_uid=ESCROW_UID, expected_buyer=BUYER,
             seller_wallet=SELLER,
             agreed_price=1000,
             agreed_duration_seconds=3600,
@@ -266,7 +384,7 @@ class TestVerifyHappyPath:
             token=TOKEN.upper(),
         )
         await verify_escrow_for_settlement(
-            escrow_uid="0xdead",
+            escrow_uid=ESCROW_UID, expected_buyer=BUYER,
             seller_wallet=SELLER,
             agreed_price=1000,
             agreed_duration_seconds=3600,
@@ -289,7 +407,7 @@ class TestVerifyRejections:
     async def test_rejects_when_no_alkahest_client(self):
         with pytest.raises(EscrowVerificationError, match="AlkahestClient not configured"):
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -304,7 +422,7 @@ class TestVerifyRejections:
     async def test_rejects_when_seller_wallet_blank(self):
         with pytest.raises(EscrowVerificationError, match="Escrow recipient"):
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet="",
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -327,7 +445,7 @@ class TestVerifyRejections:
         seams["build_obligation_data_fn"] = _broken
         with pytest.raises(EscrowVerificationError, match="Cannot construct expected obligation_data"):
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -347,7 +465,7 @@ class TestVerifyRejections:
         seams["get_obligation_fn"] = _broken_read
         with pytest.raises(EscrowVerificationError, match="Failed to read escrow"):
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -363,7 +481,7 @@ class TestVerifyRejections:
         att = _good_obligation(revocation_time=10**12)
         with pytest.raises(EscrowVerificationError, match="is revoked"):
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -379,7 +497,7 @@ class TestVerifyRejections:
         att = _good_obligation(expiration_time=1000)
         with pytest.raises(EscrowVerificationError, match="expired"):
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -398,7 +516,7 @@ class TestVerifyRejections:
         att = _good_obligation(expiration_time=0)
         with pytest.raises(EscrowVerificationError, match="no expirationTime"):
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -415,7 +533,7 @@ class TestVerifyRejections:
         att = _good_obligation(arbiter="0xdeadbeef00000000000000000000000000000000")
         with pytest.raises(EscrowVerificationError, match="obligation_data mismatch"):
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -433,7 +551,7 @@ class TestVerifyRejections:
         att = _good_obligation(demand=_encode_recipient(BUYER))
         with pytest.raises(EscrowVerificationError, match="obligation_data mismatch") as exc:
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -452,7 +570,7 @@ class TestVerifyRejections:
         att = _good_obligation(token="0xdeadbeef00000000000000000000000000000000")
         with pytest.raises(EscrowVerificationError, match="obligation_data mismatch") as exc:
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -472,7 +590,7 @@ class TestVerifyRejections:
         att = _good_obligation(amount=999)
         with pytest.raises(EscrowVerificationError, match="obligation_data mismatch") as exc:
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -493,7 +611,7 @@ class TestVerifyRejections:
         att = _good_obligation(amount=2000)
         with pytest.raises(EscrowVerificationError, match="obligation_data mismatch"):
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -606,7 +724,7 @@ class TestVerifyProposalDispatch:
     async def test_reads_token_from_literal_fields(self, patched_codec_lookup):
         seams, captured = _build_seams_capturing_token()
         await verify_escrow_for_settlement(
-            escrow_uid="0xdead",
+            escrow_uid=ESCROW_UID, expected_buyer=BUYER,
             seller_wallet=SELLER,
             agreed_price=1000,
             agreed_duration_seconds=3600,
@@ -629,7 +747,7 @@ class TestVerifyProposalDispatch:
             )
         )
         await verify_escrow_for_settlement(
-            escrow_uid="0xdead",
+            escrow_uid=ESCROW_UID, expected_buyer=BUYER,
             seller_wallet=SELLER,
             agreed_price=1000,
             agreed_duration_seconds=3600,
@@ -659,7 +777,7 @@ class TestVerifyProposalDispatch:
             expiration_unix=1_800_000_000,
         )
         await verify_escrow_for_settlement(
-            escrow_uid="0xdead",
+            escrow_uid=ESCROW_UID, expected_buyer=BUYER,
             seller_wallet=SELLER,
             agreed_price=1000,
             agreed_duration_seconds=3600,
@@ -679,7 +797,7 @@ class TestVerifyProposalDispatch:
         the token from ``literal_fields`` exclusively."""
         seams, captured = _build_seams_capturing_token()
         await verify_escrow_for_settlement(
-            escrow_uid="0xdead",
+            escrow_uid=ESCROW_UID, expected_buyer=BUYER,
             seller_wallet=SELLER,
             agreed_price=1000,
             agreed_duration_seconds=3600,
@@ -701,7 +819,7 @@ class TestVerifyProposalDispatch:
         seams, _captured = _build_seams_capturing_token()
         with pytest.raises(EscrowVerificationError, match="omitted token"):
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -730,7 +848,7 @@ class TestVerifyProposalDispatch:
         )
         with pytest.raises(NotImplementedError) as exc_info:
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -761,7 +879,7 @@ class TestVerifyProposalDispatch:
         )
         with pytest.raises(NotImplementedError):
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -790,7 +908,7 @@ class TestVerifyProposalDispatch:
         )
         with pytest.raises(EscrowVerificationError, match="Cannot resolve escrow codec"):
             await verify_escrow_for_settlement(
-                escrow_uid="0xdead",
+                escrow_uid=ESCROW_UID, expected_buyer=BUYER,
                 seller_wallet=SELLER,
                 agreed_price=1000,
                 agreed_duration_seconds=3600,
@@ -810,7 +928,7 @@ class TestVerifyProposalDispatch:
         ARBITER → "recipient_arbiter"."""
         seams, captured = _build_seams_capturing_token()
         await verify_escrow_for_settlement(
-            escrow_uid="0xdead",
+            escrow_uid=ESCROW_UID, expected_buyer=BUYER,
             seller_wallet=SELLER,
             agreed_price=1000,
             agreed_duration_seconds=3600,
@@ -832,7 +950,7 @@ class TestVerifyProposalDispatch:
         (chain, address, config_path) — not the listing's or kwarg's."""
         seams, _captured = _build_seams_capturing_token()
         await verify_escrow_for_settlement(
-            escrow_uid="0xdead",
+            escrow_uid=ESCROW_UID, expected_buyer=BUYER,
             seller_wallet=SELLER,
             agreed_price=1000,
             agreed_duration_seconds=3600,
