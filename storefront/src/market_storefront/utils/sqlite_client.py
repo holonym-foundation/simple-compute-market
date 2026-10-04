@@ -736,8 +736,6 @@ class SQLiteClient:
                 """
             )
             apply_schema_migrations(conn)
-            from .capacity_holds import tables as create_capacity_hold_tables
-            create_capacity_hold_tables(cur)
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_derived_compute_listings_resource "
                 "ON derived_compute_listings(resource_id, gpu_count)"
@@ -922,6 +920,10 @@ class SQLiteClient:
                     AND (settlement_mode IS NOT NEW.settlement_mode
                          OR negotiation_id IS NOT NEW.negotiation_id))
                 BEGIN SELECT RAISE(ABORT,'original settlement mode is immutable'); END""")
+            # Both referenced ledgers must exist before installing reciprocal
+            # escrow/hold exclusion triggers, including on a fresh database.
+            from .capacity_holds import tables as create_capacity_hold_tables
+            create_capacity_hold_tables(cur)
             # Publications — record of which registries received which
             # payload for which listing. Updates and deletes consult this
             # to know what's where; per-registry payload mode (milestone b)

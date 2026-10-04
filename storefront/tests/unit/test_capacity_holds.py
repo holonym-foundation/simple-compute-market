@@ -10,6 +10,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import time
+import threading
 import sys
 from types import SimpleNamespace
 import unittest
@@ -71,6 +72,9 @@ class CapacityHoldTests(unittest.TestCase):
                 created_at TEXT, updated_at TEXT);
               CREATE TABLE resource_transition_events (event_id TEXT,resource_id TEXT,event_type TEXT,set_value REAL,
                 set_state TEXT,set_attribute_json TEXT,idempotency_key TEXT,occurred_at TEXT);
+              CREATE TABLE escrows (escrow_uid TEXT PRIMARY KEY, negotiation_id TEXT, status TEXT,
+                fulfillment_uid TEXT, provisioning_job_id TEXT, chain_name TEXT, escrow_address TEXT,
+                settlement_mode TEXT, is_primary INTEGER, created_at TEXT, updated_at TEXT);
             ''')
             con.execute('INSERT INTO negotiation_threads VALUES (?,?,?,?,?,?,?)',
                 (NEG, BUYER, 'success', 'listing-1', '123', 300, json.dumps(self.proposal)))
@@ -153,6 +157,52 @@ class CapacityHoldTests(unittest.TestCase):
             results = list(executor.map(self.reserve,[self.binding,second]))
         self.assertEqual(sum(result is not None for result in results),1)
         self.assertEqual(self.scalar('SELECT count(*) FROM compute_allocations'),1)
+
+    def test_waiting_writer_lock_cannot_arm_after_expiry(self):
+        receipt = self.reserve()
+        waiting = threading.Event()
+        current = [1000]
+        class Cursor(sqlite3.Cursor):
+            def execute(self, sql, *args):
+                if sql == 'BEGIN IMMEDIATE':
+                    waiting.set()
+                return super().execute(sql,*args)
+        class Connection(sqlite3.Connection):
+            def cursor(self, *args, **kwargs):
+                return super().cursor(*args, factory=Cursor, **kwargs)
+        connect = sqlite3.connect
+        with closing(connect(self.db.db_path)) as blocker:
+            blocker.execute('BEGIN IMMEDIATE')
+            with patch('time.time',side_effect=lambda:current[0]), \
+                    patch.object(holds.sqlite3,'connect',side_effect=lambda path:connect(path,factory=Connection)), \
+                    ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.action,receipt,'arm')
+                self.assertTrue(waiting.wait(2))
+                current[0] = 1301
+                blocker.commit()
+                result = future.result(timeout=2)
+        self.assertEqual(result['status'],'expired')
+        self.assertFalse(result['paymentAuthorized'])
+
+    def test_legacy_escrow_and_capacity_hold_are_atomically_exclusive(self):
+        # A legacy request may already be awaiting its chain read when this
+        # hold is armed. Its later actual INSERT must not launch legacy work.
+        self.assertFalse(holds.has_hold(self.db.db_path,NEG))
+        receipt = self.reserve()
+        self.action(receipt,'arm')
+        with closing(sqlite3.connect(self.db.db_path)) as con, con:
+            with self.assertRaises(sqlite3.IntegrityError):
+                con.execute("INSERT INTO escrows (escrow_uid,negotiation_id,settlement_mode) VALUES (?,?,'legacy')",(UID,NEG))
+        self.assertEqual(self.scalar('SELECT count(*) FROM escrows'),0)
+        # Reverse order: an already committed legacy/unknown escrow forbids a
+        # new hold, including a bypass attempt through direct SQL insertion.
+        other = {**self.binding,'negotiationId':'neg_'+uuid.uuid4().hex,'requestDigest':'e'*64}
+        with closing(sqlite3.connect(self.db.db_path)) as con, con:
+            con.execute('INSERT INTO negotiation_threads VALUES (?,?,?,?,?,?,?)',
+                (other['negotiationId'],BUYER,'success','listing-1','123',300,json.dumps(self.proposal)))
+            con.execute("INSERT INTO escrows (escrow_uid,negotiation_id,settlement_mode) VALUES (?,?,'legacy')",('0x'+'b'*64,other['negotiationId']))
+        with self.assertRaises(ValueError):
+            self.reserve(other)
 
     def test_consume_exact_allocation_after_arm_rejects_changed_escrow_and_config(self):
         receipt = self.reserve()
@@ -260,10 +310,8 @@ class CapacityHoldTests(unittest.TestCase):
             con.executescript('''
               ALTER TABLE compute_allocations ADD COLUMN vm_host TEXT;
               ALTER TABLE compute_allocations ADD COLUMN vm_target TEXT;
-              CREATE TABLE escrows (escrow_uid TEXT PRIMARY KEY, negotiation_id TEXT, status TEXT,
-                fulfillment_uid TEXT, provisioning_job_id TEXT, chain_name TEXT, escrow_address TEXT);
             ''')
-            con.execute("INSERT INTO escrows VALUES (?,?,'provisioning',NULL,NULL,'base_sepolia',?)", (UID,NEG,'0x'+'3'*40))
+            con.execute("INSERT INTO escrows (escrow_uid,negotiation_id,status,chain_name,escrow_address,settlement_mode) VALUES (?,?,'provisioning','base_sepolia',?,'capability')", (UID,NEG,'0x'+'3'*40))
         self.db.reserve_available_compute_vm = AsyncMock(side_effect=AssertionError('second allocation forbidden'))
         self.db.update_compute_allocation_state = AsyncMock()
         self.db.update_escrow = AsyncMock()

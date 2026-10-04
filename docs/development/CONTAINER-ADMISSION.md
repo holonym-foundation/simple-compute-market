@@ -240,6 +240,9 @@ Hold plus allocation are committed in one `BEGIN IMMEDIATE` transaction. Same
 request/negotiation retries return the original receipt without extending its
 maximum five-minute TTL. Unarmed expiry/cancel releases only that allocation;
 allocation attempts also reap expired unarmed holds under the same lock.
+Arming and consumption sample the wall clock after acquiring the writer lock.
+Reciprocal SQLite insert guards prevent a hold and a legacy escrow racing across
+an awaited chain read from taking the same negotiation down separate paths.
 `payment_pending` never expires or cancels automatically, even if no escrow UID
 has arrived. It requires independent reconciliation before any future release
 mechanism; this source supplies no payment-absence assertion or automatic refund.

@@ -90,6 +90,7 @@ def tables(cur):
       );
       CREATE TRIGGER IF NOT EXISTS buyer_capacity_hold_no_replace BEFORE INSERT ON buyer_capacity_holds
       WHEN NEW.status <> 'held' OR NEW.escrow_uid IS NOT NULL
+        OR EXISTS (SELECT 1 FROM escrows WHERE negotiation_id=NEW.negotiation_id)
         OR EXISTS (SELECT 1 FROM buyer_capacity_holds WHERE hold_id=NEW.hold_id
         OR negotiation_id=NEW.negotiation_id OR request_digest=NEW.request_digest
         OR allocation_id=NEW.allocation_id
@@ -114,6 +115,10 @@ def tables(cur):
           OR NEW.escrow_uid IS NOT h.escrow_uid
           OR (h.status IN ('held','payment_pending') AND NEW.state NOT IN ('reserved','held'))))
       BEGIN SELECT RAISE(ABORT,'immutable capacity allocation'); END;
+      CREATE TRIGGER IF NOT EXISTS buyer_capacity_escrow_mode_guard BEFORE INSERT ON escrows
+      WHEN EXISTS (SELECT 1 FROM buyer_capacity_holds h WHERE h.negotiation_id=NEW.negotiation_id
+        AND (NEW.settlement_mode IS NOT 'capability' OR h.status<>'consumed' OR h.escrow_uid IS NOT NEW.escrow_uid))
+      BEGIN SELECT RAISE(ABORT,'capacity hold settlement conflict'); END;
       CREATE TRIGGER IF NOT EXISTS buyer_capacity_allocation_no_delete BEFORE DELETE ON compute_allocations
       WHEN EXISTS (SELECT 1 FROM buyer_capacity_holds WHERE allocation_id=OLD.allocation_id)
       BEGIN SELECT RAISE(ABORT,'immutable capacity allocation'); END;
@@ -147,6 +152,8 @@ def original(cur, binding, now, *, new=False):
     require(listing and not listing['paused'])
     if new:
         require(listing['status'] == 'open')
+        require(cur.execute('SELECT 1 FROM escrows WHERE negotiation_id=? LIMIT 1',
+                            (binding['negotiationId'],)).fetchone() is None)
     resource = json.loads(listing['offer_resource'])
     require(isinstance(resource, dict) and 'gpu_model' in resource)
     attributes = {key: resource[key] for key in ('pool_id', 'resource_id', 'region', 'gpu_model', 'gpu_count')
@@ -223,10 +230,11 @@ def check_retained(cur, row, now):
 
 def transition(db, *, negotiation_id, hold_id, buyer, seller, action, now=None):
     require(action in ('status', 'arm', 'cancel'))
-    now = int(time.time()) if now is None else now
     with closing(sqlite3.connect(db.db_path)) as con, con:
         cur = con.cursor()
         cur.execute('BEGIN IMMEDIATE')
+        # Clock must be sampled after waiting for the writer lock, never before.
+        now = int(time.time()) if now is None else now
         row = one(cur, 'SELECT * FROM buyer_capacity_holds WHERE hold_id=? AND negotiation_id=?', (hold_id, negotiation_id))
         require(row and json.loads(row['binding'])['buyer'] == buyer)
         binding = json.loads(row['binding'])
@@ -260,10 +268,10 @@ def has_hold(db_path, negotiation_id):
 def consume(db_path, *, hold_id, negotiation_id, escrow_uid, container_env, seller, now=None):
     require(isinstance(escrow_uid, str) and re.fullmatch(r'0x[0-9a-f]{64}', escrow_uid)
             and escrow_uid != '0x' + '0' * 64)
-    now = int(time.time()) if now is None else now
     with closing(sqlite3.connect(db_path)) as con, con:
         cur = con.cursor()
         cur.execute('BEGIN IMMEDIATE')
+        now = int(time.time()) if now is None else now
         row = one(cur, 'SELECT * FROM buyer_capacity_holds WHERE hold_id=? AND negotiation_id=?', (hold_id, negotiation_id))
         require(row and row['status'] in ('payment_pending', 'consumed'))
         binding = json.loads(row['binding'])
