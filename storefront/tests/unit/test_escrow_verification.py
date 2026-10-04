@@ -721,6 +721,14 @@ def _erc20_proposal(*, fields=None, literal_fields=None):
 
 class TestVerifyProposalDispatch:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('expiration', [1_800_000_001, 1_799_999_999])
+    async def test_exact_accepted_deadline_not_merely_future(self, patched_codec_lookup, expiration):
+        with pytest.raises(EscrowVerificationError, match='expiration differs'):
+            await verify_escrow_for_settlement(**_verification_kwargs(),
+                escrow_proposal=_erc20_proposal(literal_fields={'token':TOKEN}),
+                **_make_seams(_good_obligation(expiration_time=expiration)))
+
+    @pytest.mark.asyncio
     async def test_reads_token_from_literal_fields(self, patched_codec_lookup):
         seams, captured = _build_seams_capturing_token()
         await verify_escrow_for_settlement(

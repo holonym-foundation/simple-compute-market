@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import tempfile
 import time
+import uuid
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -79,6 +80,40 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
             buyer_auth=buyer_auth, require_settlement_owner=require, HTTPException=HTTPException,
             Query=lambda **kwargs: None, SettleStatusResponse=SimpleNamespace))
 
+    async def test_capacity_reserve_signature_commits_exact_body_and_authenticated_negotiation(self):
+        from market_storefront.utils import capacity_holds
+        neg = 'neg_' + uuid.uuid4().hex
+        with sqlite3.connect(self.path) as con:
+            con.execute('INSERT INTO negotiation_threads VALUES (?,?,?)', (neg,self.owner.address.lower(),'routing-label'))
+        binding = dict(schema=1,requestDigest='a'*64,approvalDigest='sha256:'+'b'*64,
+            policyRevision='sha256:'+'c'*64,checkoutHoldId=str(uuid.uuid4()),checkoutIntentDigest='d'*64,
+            ownerWallet=self.foreign.address.lower(),buyer=self.owner.address.lower(),seller=self.foreign.address.lower(),
+            listingId='listing-1',negotiationId=neg,configDigest='sha256:'+'e'*64,proposalDigest='sha256:'+'f'*64,
+            amountAtomic='123',durationSeconds=300,chainId=84532)
+        allocate = AsyncMock(return_value={'status':'held'})
+        self.db.reserve_available_compute_vm = allocate
+        from market_storefront.utils import config
+        chain_patch = patch.object(config,'CHAINS',{'base_sepolia':SimpleNamespace(chain_id=84532)})
+        chain_patch.start()
+        self.addCleanup(chain_patch.stop)
+        endpoint = function('controllers/negotiate_controller.py','capacity_hold',dict(buyer_auth=buyer_auth,HTTPException=HTTPException))
+        request = self.signed(self.owner,'capacity_hold_reserve',neg+':'+capacity_holds.digest(binding))
+        self.assertEqual(await endpoint(SimpleNamespace(_db=self.db),neg,
+            SimpleNamespace(buyer_address=self.owner.address.lower(),binding=binding),request),{'status':'held'})
+        allocate.assert_awaited_once()
+        allocate.reset_mock()
+        with self.assertRaises(HTTPException) as changed:
+            await endpoint(SimpleNamespace(_db=self.db),neg,
+                SimpleNamespace(buyer_address=self.owner.address.lower(),binding={**binding,'amountAtomic':'124'}),request)
+        self.assertEqual(changed.exception.status_code,403)
+        foreign = {**binding,'buyer':self.foreign.address.lower(),'seller':self.owner.address.lower()}
+        with self.assertRaises(HTTPException) as outsider:
+            await endpoint(SimpleNamespace(_db=self.db),neg,
+                SimpleNamespace(buyer_address=self.foreign.address.lower(),binding=foreign),
+                self.signed(self.foreign,'capacity_hold_reserve',neg+':'+capacity_holds.digest(foreign)))
+        self.assertEqual(outsider.exception.status_code,404)
+        allocate.assert_not_awaited()
+
     async def test_authenticated_creation_same_owner_status_and_foreign_signature_refusal(self):
         await self.negotiate()
         endpoint = self.status_endpoint()
@@ -118,7 +153,7 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"escrow_uid": "escrow", "negotiation_id": "neg-1", "status": "provisioning"})) as start:
             response = await endpoint(SimpleNamespace(_db=self.db), "escrow", SimpleNamespace(
                 buyer_address=self.owner.address, negotiation_id="neg-1", chain_name="base_sepolia",
-                ssh_public_key="", container_env=None), self.signed(self.owner, "settle_escrow", "escrow"))
+                ssh_public_key="", container_env=None, capacity_hold_id=None), self.signed(self.owner, "settle_escrow", "escrow"))
             self.assertEqual(response["status_code"], 202)
             start.assert_awaited_once()
 
@@ -135,7 +170,7 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException) as denied:
                 await endpoint(SimpleNamespace(_db=self.db), "escrow", SimpleNamespace(
                     buyer_address=self.owner.address, negotiation_id="neg-1", chain_name="base_sepolia",
-                    ssh_public_key="", container_env=None), self.signed(self.owner, "settle_escrow", "escrow"))
+                    ssh_public_key="", container_env=None, capacity_hold_id=None), self.signed(self.owner, "settle_escrow", "escrow"))
             self.assertEqual(denied.exception.status_code, 404)
 
     async def test_legacy_route_label_never_supplies_buyer_authority(self):

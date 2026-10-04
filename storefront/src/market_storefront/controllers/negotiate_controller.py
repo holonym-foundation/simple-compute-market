@@ -7,6 +7,7 @@ documented in the OpenAPI description; no FastAPI Security scheme applies.
 from __future__ import annotations
 
 import logging
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -19,6 +20,8 @@ from market_storefront.models.negotiation_models import (
     NegotiateContinueResponse,
     NegotiateNewRequest,
     NegotiateNewResponse,
+    CapacityHoldRequest,
+    CapacityHoldActionRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,6 +36,51 @@ class NegotiateController:
         db=Depends(lambda: _container.resolved_sqlite_client),
     ) -> None:
         self._db = db
+
+    @router.post('/{neg_id}/capacity-hold', summary='Reserve capacity before escrow payment')
+    async def capacity_hold(self, neg_id: str, body: CapacityHoldRequest, request: Request) -> dict:
+        from market_storefront.utils import capacity_holds
+        from market_storefront.utils.config import CHAINS
+        try:
+            binding = capacity_holds.validate_binding(body.binding)
+            capacity_holds.require(binding['negotiationId'] == neg_id and binding['buyer'] == body.buyer_address)
+            # Existing auth signs resource identity, not the JSON body. Include
+            # its canonical digest so original/config/payment bindings cannot be swapped.
+            buyer_auth._verify(request, 'capacity_hold_reserve', neg_id + ':' + capacity_holds.digest(binding), body.buyer_address)
+            await buyer_auth.require_negotiation_owner(self._db, neg_id, body.buyer_address, request)
+            capacity_holds.require(getattr(CHAINS.get('base_sepolia'), 'chain_id', None) == 84532)
+            result = await self._db.reserve_available_compute_vm(listing_id=binding['listingId'], capacity_hold_binding=binding)
+            if not result:
+                raise ValueError('capacity_hold_unavailable')
+            return result
+        except ValueError:
+            raise HTTPException(status_code=409, detail='capacity_hold_unavailable') from None
+
+    @router.get('/{neg_id}/capacity-hold/{hold_id}', summary='Observe retained capacity hold')
+    async def capacity_hold_status(self, neg_id: str, hold_id: str, buyer_address: str, request: Request) -> dict:
+        from market_storefront.utils import capacity_holds
+        from market_storefront.utils.config import settings
+        buyer_auth._verify(request, 'capacity_hold_status', neg_id + ':' + hold_id, buyer_address)
+        await buyer_auth.require_negotiation_owner(self._db, neg_id, buyer_address, request)
+        try:
+            return await asyncio.to_thread(capacity_holds.transition, self._db, negotiation_id=neg_id,
+                hold_id=hold_id, buyer=buyer_address.lower(), seller=(settings.wallet.address or '').lower(), action='status')
+        except ValueError:
+            raise HTTPException(status_code=409, detail='capacity_hold_unavailable') from None
+
+    @router.post('/{neg_id}/capacity-hold/{hold_id}', summary='Arm once before payment, or cancel an unarmed hold')
+    async def capacity_hold_action(self, neg_id: str, hold_id: str, body: CapacityHoldActionRequest, request: Request) -> dict:
+        from market_storefront.utils import capacity_holds
+        from market_storefront.utils.config import CHAINS, settings
+        buyer_auth._verify(request, 'capacity_hold_' + body.action, neg_id + ':' + hold_id, body.buyer_address)
+        await buyer_auth.require_negotiation_owner(self._db, neg_id, body.buyer_address, request)
+        try:
+            if body.action == 'arm':
+                capacity_holds.require(getattr(CHAINS.get('base_sepolia'), 'chain_id', None) == 84532)
+            return await asyncio.to_thread(capacity_holds.transition, self._db, negotiation_id=neg_id,
+                hold_id=hold_id, buyer=body.buyer_address.lower(), seller=(settings.wallet.address or '').lower(), action=body.action)
+        except ValueError:
+            raise HTTPException(status_code=409, detail='capacity_hold_unavailable') from None
 
     @router.post(
         "/new",
