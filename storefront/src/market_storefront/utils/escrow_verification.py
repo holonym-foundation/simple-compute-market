@@ -9,8 +9,9 @@ negotiation inputs the buyer used.
 
 Verification is two-phase:
 
-1. Attestation envelope: the EAS attestation exists, is not revoked, and
-   has a non-zero expirationTime in the future.
+1. Attestation envelope: exact UID, persisted buyer beneficiary, configured
+   escrow attester and its pinned schema, zero reference, revocable, live.
+   The SDK only decodes EAS bytes: it does not authenticate this envelope.
 
 2. Obligation data: the chain's ObligationData (arbiter + demand + token
    + amount for ERC20EscrowObligation) dict-equals the expected
@@ -35,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -43,6 +45,28 @@ logger = logging.getLogger(__name__)
 
 class EscrowVerificationError(ValueError):
     """Raised when an on-chain escrow does not match the negotiated terms."""
+
+
+_ERC20_SCHEMA = "address arbiter, bytes demand, address token, uint256 amount"
+_ZERO_UID = "0x" + "00" * 32
+
+
+def _identity_hex(value: Any, size: int, label: str, *, nonzero: bool = True) -> str:
+    if (not isinstance(value, str)
+            or re.fullmatch(r"0x[0-9a-fA-F]{%d}" % (size * 2), value) is None
+            or (nonzero and int(value[2:], 16) == 0)):
+        raise EscrowVerificationError(f"Invalid {label}")
+    return value.lower()
+
+
+def erc20_escrow_schema_uid(escrow_address: str) -> str:
+    """Pinned non-tierable schema, resolver=self, revocable=true (EAS packed UID).
+
+    This trusts the configured deployment; it is not bytecode verification.
+    """
+    from eth_utils import keccak
+    address = _identity_hex(escrow_address, 20, "configured escrow address")
+    return "0x" + keccak(_ERC20_SCHEMA.encode() + bytes.fromhex(address[2:]) + b"\x01").hex()
 
 
 def _normalize_address(addr: Any) -> str | None:
@@ -154,6 +178,7 @@ def _read_chain_obligation_data(obligation: Any) -> dict[str, Any]:
 async def verify_escrow_for_settlement(
     *,
     escrow_uid: str,
+    expected_buyer: str,
     seller_wallet: str,
     agreed_price: int,
     agreed_duration_seconds: int,
@@ -173,6 +198,10 @@ async def verify_escrow_for_settlement(
     ----------
     escrow_uid:
         The 0x-prefixed 32-byte attestation uid handed to us by the buyer.
+    expected_buyer:
+        Signature-bound buyer from the persisted negotiation, never a URL
+        or an unauthenticated request claim. This is the escrow beneficiary,
+        not proof of the token payer (doObligationFor supports third-party funding).
     seller_wallet:
         Our wallet address; participates in the expected obligation_data
         via the RecipientArbiter demand encoding.
@@ -190,8 +219,8 @@ async def verify_escrow_for_settlement(
     alkahest_client:
         An ``AlkahestClient`` already bound to the right chain.
     chain_name, alkahest_address_config_path:
-        Used to resolve the canonical arbiter + escrow contract
-        addresses for the chain (a static config lookup, not an RPC call).
+        Used to resolve trusted, pinned arbiter + escrow deployment addresses
+        for the selected client chain (static lookup, no RPC or bytecode proof).
     escrow_proposal:
         The buyer's ``EscrowProposal``, persisted on the negotiation
         thread at /negotiate/new. When present, the verifier resolves
@@ -225,6 +254,28 @@ async def verify_escrow_for_settlement(
         raise EscrowVerificationError(
             "AlkahestClient not configured — cannot verify escrow on chain"
         )
+
+    canonical_uid = _identity_hex(escrow_uid, 32, "escrow UID")
+    if escrow_uid != canonical_uid:
+        # The original UID is a durable DB/idempotency key at the caller.
+        # Refuse alternate spellings rather than only normalizing this read.
+        raise EscrowVerificationError("Escrow UID must be canonical lowercase hex")
+    expected_buyer = _identity_hex(expected_buyer, 20, "persisted buyer")
+    if not isinstance(chain_name, str) or not chain_name:
+        raise EscrowVerificationError("Missing selected client chain")
+    if escrow_proposal is not None and escrow_proposal.chain_name != chain_name:
+        raise EscrowVerificationError("Escrow proposal chain differs from selected client chain")
+    if escrow_proposal is None:
+        accepted = listing.get("accepted_escrows")
+        if isinstance(accepted, str):
+            try:
+                accepted = json.loads(accepted)
+            except ValueError as exc:
+                raise EscrowVerificationError("Invalid listing escrow configuration") from exc
+        if (not isinstance(accepted, list) or not accepted
+                or not isinstance(accepted[0], dict)
+                or accepted[0].get("chain_name") != chain_name):
+            raise EscrowVerificationError("Listing escrow chain differs from selected client chain")
 
     if build_obligation_data_fn is None:
         from service.clients.alkahest import (
@@ -307,16 +358,29 @@ async def verify_escrow_for_settlement(
         effective_escrow_kind = escrow_kind
         effective_token = _extract_token_contract_from_listing(listing)
 
-    if get_obligation_fn is None:
-        from service.clients.alkahest import get_escrow_kind_codec
-        if _codec is None:
-            try:
-                _codec = get_escrow_kind_codec(effective_escrow_kind)
-            except ValueError as exc:
-                raise EscrowVerificationError(
-                    f"Cannot read escrow {escrow_uid}: {exc}"
-                ) from exc
+    from service.clients.alkahest import get_escrow_kind_codec
+    if _codec is None:
+        try:
+            _codec = get_escrow_kind_codec(effective_escrow_kind)
+        except ValueError as exc:
+            raise EscrowVerificationError(f"Cannot read escrow {escrow_uid}: {exc}") from exc
+    if _codec.kind != "erc20_escrow_obligation_nontierable":
+        raise EscrowVerificationError("Unsupported escrow envelope schema")
+    try:
+        expected_attester = _identity_hex(
+            _codec.resolve_address(chain_name, config_path=alkahest_address_config_path),
+            20, "configured escrow address",
+        )
+        selected_address = (escrow_proposal.escrow_address if escrow_proposal is not None
+                            else accepted[0].get("escrow_address"))
+        if selected_address and selected_address.lower() != "0x" + "00" * 20:
+            if _identity_hex(selected_address, 20, "selected escrow address") != expected_attester:
+                raise EscrowVerificationError("Selected escrow differs from configured deployment")
+        expected_schema = erc20_escrow_schema_uid(expected_attester)
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise EscrowVerificationError(f"Cannot resolve escrow deployment: {exc}") from exc
 
+    if get_obligation_fn is None:
         async def get_obligation_fn(client, uid):  # type: ignore[no-redef]
             return await _codec.get_obligation(client, uid)
 
@@ -352,8 +416,29 @@ async def verify_escrow_for_settlement(
             f"Failed to read escrow {escrow_uid} from chain: {exc}"
         ) from exc
 
-    att = decoded["attestation"]
-    obligation = decoded["data"]
+    try:
+        att = decoded["attestation"]
+        obligation = decoded["data"]
+        identities = (
+            ("uid", 32, escrow_uid),
+            ("recipient", 20, expected_buyer),
+            ("attester", 20, expected_attester),
+            ("schema", 32, expected_schema),
+            ("ref_uid", 32, _ZERO_UID),
+        )
+        for field, size, expected_value in identities:
+            actual_value = _identity_hex(getattr(att, field), size, field,
+                                         nonzero=field != "ref_uid")
+            if actual_value != expected_value:
+                raise EscrowVerificationError(f"Escrow attestation {field} mismatch")
+        if att.revocable is not True:
+            raise EscrowVerificationError("Escrow attestation must be revocable")
+        for field in ("time", "expiration_time", "revocation_time"):
+            value = getattr(att, field)
+            if type(value) is not int or not 0 <= value < 2**64:
+                raise EscrowVerificationError(f"Invalid attestation {field}")
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise EscrowVerificationError("Incomplete escrow attestation envelope") from exc
 
     # Attestation envelope checks (independent of obligation_data shape).
     if att.revocation_time:

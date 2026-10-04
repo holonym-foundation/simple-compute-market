@@ -198,6 +198,74 @@ async def _seed_seller_order(client: SQLiteClient, listing_id: str = "seller-ord
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["valid", "foreign_buyer", "forged_attester",
+    "forged_schema", "wrong_uid", "reference", "nonrevocable", "ownerless", "wrong_chain"])
+async def test_real_verifier_guards_initial_settlement_before_insert(client, monkeypatch, mutation):
+    """Actual orchestrator + verifier + codec + SQLite; only transport and work are fake."""
+    import asyncio
+    from types import SimpleNamespace
+    from market_storefront.utils.escrow_verification import (
+        EscrowVerificationError, erc20_escrow_schema_uid,
+    )
+    buyer, seller, escrow, token, arbiter = ["0x" + c * 40 for c in "12345"]
+    uid = "0x" + "ab" * 32
+    await _seed_seller_order(client)
+    await _seed_negotiation(client)
+    await client.bind_authenticated_negotiation_buyer(negotiation_id="neg-1", buyer=buyer)
+    accepted = [{"chain_name": "anvil", "escrow_address": escrow,
+                 "literal_fields": {"token": token}}]
+    with sqlite3.connect(client.db_path) as con:
+        con.execute("UPDATE listings SET accepted_escrows=? WHERE listing_id='seller-ord-1'",
+                    (json.dumps(accepted),))
+        if mutation == "ownerless":
+            con.execute("UPDATE negotiation_threads SET buyer=NULL WHERE negotiation_id='neg-1'")
+        if mutation == "wrong_chain":
+            con.execute("UPDATE negotiation_threads SET buyer_escrow_proposal=? WHERE negotiation_id='neg-1'",
+                        (json.dumps({"chain_name": "base_sepolia", "escrow_address": escrow,
+                                     "literal_fields": {"token": token},
+                                     "expiration_unix": 4_000_000_000}),))
+    envelope = SimpleNamespace(uid=uid, recipient=buyer, attester=escrow,
+        schema=erc20_escrow_schema_uid(escrow), ref_uid="0x" + "00" * 32,
+        revocable=True, time=1_600_000_000, expiration_time=4_000_000_000, revocation_time=0)
+    changes = {"foreign_buyer": ("recipient", seller), "forged_attester": ("attester", buyer),
+        "forged_schema": ("schema", "0x" + "cd" * 32), "wrong_uid": ("uid", "0x" + "ef" * 32),
+        "reference": ("ref_uid", uid), "nonrevocable": ("revocable", False)}
+    if mutation in changes:
+        setattr(envelope, *changes[mutation])
+    obligation = dict(token=token, amount=10**18, arbiter=arbiter, demand=b"\x12\x34")
+    getter = AsyncMock(return_value={"attestation": envelope, "data": SimpleNamespace(**obligation)})
+    sdk = SimpleNamespace(erc20=SimpleNamespace(escrow=SimpleNamespace(
+        non_tierable=SimpleNamespace(get_obligation=getter))))
+    monkeypatch.setattr("service.clients.alkahest.get_erc20_escrow_obligation_nontierable",
+                        lambda *args, **kwargs: escrow)
+    monkeypatch.setattr("service.clients.alkahest.build_payment_obligation_data",
+                        lambda **kwargs: obligation)
+    monkeypatch.setattr("market_storefront.utils.config.settings",
+                        SimpleNamespace(wallet=SimpleNamespace(address=seller)))
+    bg = AsyncMock()
+    with patch("market_storefront.utils.settlement_jobs._run_settlement_job_bg", bg):
+        if mutation == "valid":
+            result = await start_settlement_job(escrow_uid=uid, negotiation_id="neg-1",
+                ssh_public_key="ssh-ed25519 synthetic", sqlite_client=client,
+                alkahest_client=sdk, chain_name="anvil")
+            await asyncio.sleep(0)
+            assert result["status"] == "provisioning"
+            assert (await client.load_escrow(escrow_uid=uid))["negotiation_id"] == "neg-1"
+            bg.assert_awaited_once()
+        else:
+            with pytest.raises(EscrowVerificationError):
+                await start_settlement_job(escrow_uid=uid, negotiation_id="neg-1",
+                    ssh_public_key="ssh-ed25519 synthetic", sqlite_client=client,
+                    alkahest_client=sdk, chain_name="anvil")
+            assert await client.load_escrow(escrow_uid=uid) is None
+            bg.assert_not_called()
+    if mutation in {"ownerless", "wrong_chain"}:
+        getter.assert_not_awaited()
+    else:
+        getter.assert_awaited_once_with(uid)
+
+
+@pytest.mark.asyncio
 async def test_start_refuses_unknown_negotiation(client):
     await _seed_seller_order(client)
     with pytest.raises(ValueError, match="Unknown negotiation"):

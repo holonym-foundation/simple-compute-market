@@ -863,11 +863,12 @@ class TestStage07b_VerifyEscrow:
         Exercises getRecordFromChain in isolation: reads the escrow from chain
         and confirms token, amount, and seller recipient match. No DB writes.
         """
-        require_state(deal_state, "real_escrow_uid", "seller_listing_id", "agreed_amount",
+        require_state(deal_state, "real_escrow_uid", "seller_listing_id", "agreed_amount", "negotiation_id",
                       "_alkahest_configured")
 
         result = storefront_admin_client.verify_settle(
             deal_state.real_escrow_uid,
+            negotiation_id=deal_state.negotiation_id,
             seller_wallet=seller_wallet,
             agreed_price=deal_state.agreed_amount,
             agreed_duration_seconds=DURATION_HOURS * 3600,

@@ -19,7 +19,11 @@ import pytest_asyncio
 
 @pytest.fixture
 def db():
-    return AsyncMock()
+    db = AsyncMock()
+    db.load_negotiation_thread_row.return_value = {
+        "our_listing_id": "listing-abc", "buyer": "0x" + "22" * 20,
+    }
+    return db
 
 
 @pytest.fixture(autouse=True)
@@ -76,6 +80,7 @@ class TestVerifyEscrowDryRun:
         with pytest.raises(ValueError, match="not found"):
             await svc.verify_escrow_dry_run(
                 escrow_uid=_ESCROW_UID,
+                negotiation_id="neg-1",
                 listing_id=_LISTING_ID,
                 seller_wallet=_SELLER_WALLET,
                 agreed_price=5000,
@@ -92,6 +97,7 @@ class TestVerifyEscrowDryRun:
         ) as mock_verify:
             result = await svc.verify_escrow_dry_run(
                 escrow_uid=_ESCROW_UID,
+                negotiation_id="neg-1",
                 listing_id=_LISTING_ID,
                 seller_wallet=_SELLER_WALLET,
                 agreed_price=5000,
@@ -99,9 +105,32 @@ class TestVerifyEscrowDryRun:
                 chain_name='anvil',
             )
         mock_verify.assert_awaited_once()
+        assert mock_verify.await_args.kwargs["expected_buyer"] == "0x" + "22" * 20
         assert result["valid"] is True
         assert result["escrow_uid"] == _ESCROW_UID
         assert "reason" not in result or result.get("reason") is None
+
+    @pytest.mark.parametrize("thread", [None, {"our_listing_id": "foreign"}])
+    async def test_missing_or_foreign_negotiation_refused_before_read(self, svc, db, thread):
+        db.load_listing.return_value = _LISTING_ROW
+        db.load_negotiation_thread_row.return_value = thread
+        with patch("market_storefront.services.admin_settle_service.verify_escrow_for_settlement",
+                   new=AsyncMock()) as verifier:
+            with pytest.raises(ValueError, match="Negotiation not found"):
+                await svc.verify_escrow_dry_run(escrow_uid=_ESCROW_UID, negotiation_id="neg-1",
+                    listing_id=_LISTING_ID, seller_wallet=_SELLER_WALLET, agreed_price=5000,
+                    agreed_duration_seconds=3600, chain_name="anvil")
+            verifier.assert_not_called()
+
+    async def test_ownerless_negotiation_uses_real_failclosed_verifier(self, svc, db):
+        db.load_listing.return_value = _LISTING_ROW
+        db.load_negotiation_thread_row.return_value = {"our_listing_id": _LISTING_ID}
+        result = await svc.verify_escrow_dry_run(escrow_uid="0x" + "ab" * 32,
+            negotiation_id="neg-1", listing_id=_LISTING_ID, seller_wallet=_SELLER_WALLET,
+            agreed_price=5000, agreed_duration_seconds=3600, chain_name="anvil")
+        assert result["valid"] is False
+        assert "persisted buyer" in result["reason"]
+        svc._alkahest_clients["anvil"].erc20.escrow.non_tierable.get_obligation.assert_not_called()
 
     async def test_returns_valid_false_when_verification_fails(self, svc, db):
         """EscrowVerificationError → valid=False with reason string."""
@@ -113,6 +142,7 @@ class TestVerifyEscrowDryRun:
         ):
             result = await svc.verify_escrow_dry_run(
                 escrow_uid=_ESCROW_UID,
+                negotiation_id="neg-1",
                 listing_id=_LISTING_ID,
                 seller_wallet=_SELLER_WALLET,
                 agreed_price=5000,
@@ -132,6 +162,7 @@ class TestVerifyEscrowDryRun:
         ) as mock_verify:
             await svc.verify_escrow_dry_run(
                 escrow_uid=_ESCROW_UID,
+                negotiation_id="neg-1",
                 listing_id=_LISTING_ID,
                 seller_wallet=_SELLER_WALLET,
                 agreed_price=7000,

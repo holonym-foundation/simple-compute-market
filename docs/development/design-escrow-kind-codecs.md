@@ -24,6 +24,46 @@ callers are still ERC20-shaped even though the wire model is more general:
 
 ## Contract Coverage
 
+### ERC20 non-tierable settlement identity boundary
+
+Before inserting an escrow or scheduling provisioning, the storefront binds
+the EAS recipient to the signature-bound `negotiation_threads.buyer`. A routing
+URL, request claim, or the seller recipient encoded inside the arbiter demand
+is not this identity. Historical negotiations without a verified buyer refuse
+settlement; there is no automatic ownership backfill.
+
+The SDK's `get_obligation` only reads EAS and ABI-decodes the data. The storefront
+therefore checks the exact requested UID, buyer recipient, configured escrow
+attester, expected schema UID, zero reference UID, `revocable=true`, timestamps,
+and exact negotiated obligation data. Proposal/listing and selected client-map
+chain must agree; a read cannot be relabeled as another chain afterwards.
+
+Schema identity is pinned to the non-tierable constructor's exact string
+`address arbiter, bytes demand, address token, uint256 amount`, resolver equal
+to the configured escrow address, and revocable true. EAS derives its UID as
+`keccak256(abi.encodePacked(schema, resolver, revocable))`. Source references:
+
+- [ERC20 constructor and creation methods](https://github.com/arkhai-io/alkahest/blob/0411284c4726ee933fdedca33dd69abeca2078be/contracts/src/obligations/escrow/non-tierable/ERC20EscrowObligation.sol)
+- [BaseAttester schema registration](https://github.com/arkhai-io/alkahest/blob/1bf46bb66ed38334208afe6eda48963c6823048a/contracts/src/BaseAttester.sol)
+- [Pinned EAS schema UID](https://github.com/ethereum-attestation-service/eas-contracts/blob/558250dae4cb434859b1ac3b6d32833c6448be21/contracts/SchemaRegistry.sol#L52)
+- [Pinned SDK getter](https://github.com/holonym-foundation/alkahest-py/blob/9d01fcbf9f1a6939220d2cb216e2e0aed9922041/rs/src/clients/obligations/erc20/escrow/non_tierable.rs#L30)
+
+This trusts the operator's pinned deployment/address configuration and its
+chain-bound client. It does not verify deployed bytecode, RPC chain identity,
+finality, or the provenance of an SDK default address. Those remain deployment
+acceptance requirements. A matching recipient is the buyer/refund beneficiary,
+not necessarily the token payer: `doObligationFor` supports third-party funding.
+Buyer-as-payer proof additionally needs the exact creation transaction/receipt;
+the current UID-only settlement request does not provide it. Envelope validation
+also does not strengthen RecipientArbiter into a compute-delivery guarantee or
+authorize a signing/recovery step.
+
+The admin dry-run `/admin/settle/{uid}/verify` and both client wrappers now require
+`negotiation_id`. The stored negotiation must bind the requested listing, and its
+buyer and proposal feed the same verifier. Ownerless or mismatched requests fail
+closed. This endpoint remains read-only; supplied dry-run price/duration are not
+authorization to provision. Old clients must provide the negotiated ID.
+
 Alkahest escrow obligations currently split into tierable and non-tierable
 variants of the same seven obligation shapes:
 

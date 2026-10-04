@@ -141,7 +141,7 @@ async def start_settlement_job(
     # listing-derived defaults in that case.
     proposal_raw = thread.get("buyer_escrow_proposal")
     proposal: EscrowProposal | None = None
-    if isinstance(proposal_raw, dict):
+    if proposal_raw is not None:
         proposal = EscrowProposal.model_validate(proposal_raw)
 
     # Fail-closed on-chain verification: the escrow must exist, be live,
@@ -150,6 +150,7 @@ async def start_settlement_job(
     # controller maps that to HTTP 400.
     await verify_escrow_for_settlement(
         escrow_uid=escrow_uid,
+        expected_buyer=thread.get("buyer"),
         seller_wallet=settings.wallet.address or "",
         agreed_price=int(thread["agreed_price"]),
         agreed_duration_seconds=provision.duration_seconds,
@@ -171,15 +172,9 @@ async def start_settlement_job(
         if accepted and isinstance(accepted[0], dict):
             proposal_chain = proposal_chain or accepted[0].get("chain_name")
             escrow_address = escrow_address or accepted[0].get("escrow_address")
-    # The DB row records the chain the escrow lives on — preserve the
-    # caller's (proposal-derived) chain_name rather than the request-level
-    # ``chain_name`` parameter, which should already agree but keep the
-    # proposal as the source of truth.
+    # Never relabel a read performed through a different chain's client.
     if proposal_chain and proposal_chain != chain_name:
-        logger.warning(
-            "[SETTLE_JOB] Proposal chain %r diverges from request chain %r; "
-            "using proposal chain.", proposal_chain, chain_name,
-        )
+        raise ValueError("Escrow chain differs from selected client chain")
 
     inserted = await sqlite_client.insert_escrow(
         escrow_uid=escrow_uid,

@@ -171,6 +171,7 @@ class AdminSettleController:
         try:
             result = await self._svc.verify_escrow_dry_run(
                 escrow_uid=escrow_uid,
+                negotiation_id=body.negotiation_id,
                 listing_id=body.listing_id,
                 seller_wallet=body.seller_wallet,
                 agreed_price=body.agreed_price,

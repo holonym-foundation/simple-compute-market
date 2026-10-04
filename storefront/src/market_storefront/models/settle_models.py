@@ -55,7 +55,8 @@ class VerifyEscrowRequest(BaseModel):
     chain and confirms it matches. No DB writes. Used by e2e stage 7b to
     test getRecordFromChain in isolation before committing to settle.
     """
-    seller_wallet: str = Field(description="Expected seller wallet address (recipient on-chain)")
+    negotiation_id: str = Field(description="Persisted negotiation that binds the escrow beneficiary")
+    seller_wallet: str = Field(description="Expected seller wallet address in the fulfillment demand")
     agreed_price: int = Field(
         description=(
             "Expected absolute payment amount in base units of the payment "

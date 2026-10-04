@@ -896,6 +896,7 @@ class StorefrontClient(_StorefrontClientBase):
         self,
         escrow_uid: str,
         *,
+        negotiation_id: str,
         seller_wallet: str,
         agreed_price: float,
         agreed_duration_seconds: int,
@@ -909,6 +910,7 @@ class StorefrontClient(_StorefrontClientBase):
         and reason on failure. No DB writes. Used by e2e stage 7b.
         """
         body = {
+            "negotiation_id": negotiation_id,
             "seller_wallet": seller_wallet,
             "agreed_price": agreed_price,
             "agreed_duration_seconds": agreed_duration_seconds,
@@ -1654,6 +1656,7 @@ class SyncStorefrontClient(_StorefrontClientBase):
         self,
         escrow_uid: str,
         *,
+        negotiation_id: str,
         seller_wallet: str,
         agreed_price: float,
         agreed_duration_seconds: int,
@@ -1667,6 +1670,7 @@ class SyncStorefrontClient(_StorefrontClientBase):
         and reason on failure. No DB writes. Used by e2e stage 7b.
         """
         body = {
+            "negotiation_id": negotiation_id,
             "seller_wallet": seller_wallet,
             "agreed_price": agreed_price,
             "agreed_duration_seconds": agreed_duration_seconds,
