@@ -183,6 +183,8 @@ async def start_settlement_job(
         escrow_address=escrow_address,
         is_primary=True,
         status="provisioning",
+        settlement_mode=('capability' if isinstance(container_env, dict)
+                         and 'AEX_CAPABILITY_DIRECTORY' in container_env else 'legacy'),
     )
     if not inserted:
         # Already running or finished — return current state, idempotent.

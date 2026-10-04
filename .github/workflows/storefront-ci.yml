@@ -73,6 +73,13 @@ jobs:
         working-directory: storefront
         run: uv run pytest ../service/tests/unit/test_signing.py -q
 
+      - name: Test isolated capability SQLite worker permissions
+        run: |
+          sudo --non-interactive env -i \
+            PATH=/usr/bin:/bin PYTHONPATH="$GITHUB_WORKSPACE/storefront/src" \
+            /usr/bin/python3 -B -m unittest discover \
+            -s storefront/tests/permission -p test_capability_handoff_permissions.py
+
       - name: Test provisioning admission and existing worker paths
         working-directory: storefront
         env:
