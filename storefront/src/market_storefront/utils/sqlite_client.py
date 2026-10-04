@@ -892,6 +892,7 @@ class SQLiteClient:
                   connection_details TEXT,
                   tenant_credentials TEXT,
                   reason TEXT,
+                  settlement_mode TEXT CHECK (settlement_mode IN ('legacy','capability')),
                   created_at TEXT NOT NULL,
                   updated_at TEXT NOT NULL
                 )
@@ -903,6 +904,22 @@ class SQLiteClient:
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_escrows_negotiation ON escrows(negotiation_id)"
             )
+            cur.execute("""CREATE TRIGGER IF NOT EXISTS escrow_settlement_mode_immutable
+                BEFORE UPDATE OF settlement_mode,escrow_uid,negotiation_id ON escrows
+                WHEN NEW.settlement_mode IS NOT OLD.settlement_mode
+                  OR NEW.escrow_uid IS NOT OLD.escrow_uid
+                  OR NEW.negotiation_id IS NOT OLD.negotiation_id
+                BEGIN SELECT RAISE(ABORT,'original settlement mode is immutable'); END""")
+            cur.execute("""CREATE TRIGGER IF NOT EXISTS escrow_settlement_mode_no_delete
+                BEFORE DELETE ON escrows
+                BEGIN SELECT RAISE(ABORT,'original settlement mode is immutable'); END""")
+            # REPLACE may skip DELETE triggers when recursive_triggers is off.
+            cur.execute("""CREATE TRIGGER IF NOT EXISTS escrow_settlement_mode_no_replace
+                BEFORE INSERT ON escrows WHEN EXISTS (
+                  SELECT 1 FROM escrows WHERE escrow_uid=NEW.escrow_uid
+                    AND (settlement_mode IS NOT NEW.settlement_mode
+                         OR negotiation_id IS NOT NEW.negotiation_id))
+                BEGIN SELECT RAISE(ABORT,'original settlement mode is immutable'); END""")
             # Publications — record of which registries received which
             # payload for which listing. Updates and deletes consult this
             # to know what's where; per-registry payload mode (milestone b)
@@ -1168,6 +1185,7 @@ class SQLiteClient:
                 "ALTER TABLE escrows ADD COLUMN escrow_address TEXT",
                 "ALTER TABLE escrows ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 1",
                 "ALTER TABLE escrows ADD COLUMN fulfillment_uid TEXT",
+                "ALTER TABLE escrows ADD COLUMN settlement_mode TEXT CHECK (settlement_mode IN ('legacy','capability'))",
             ):
                 try:
                     cur.execute(col_ddl)
@@ -3184,6 +3202,7 @@ class SQLiteClient:
         "connection_details",
         "tenant_credentials",
         "reason",
+        "settlement_mode",
         "created_at",
         "updated_at",
     )
@@ -3202,9 +3221,12 @@ class SQLiteClient:
         escrow_address: str | None,
         is_primary: bool = True,
         status: str = "provisioning",
+        settlement_mode: str | None = None,
     ) -> bool:
         """Insert a new escrows row. Returns True on insert, False on
         PRIMARY KEY conflict (idempotent by escrow_uid)."""
+        if settlement_mode not in (None, 'legacy', 'capability'):
+            raise ValueError('invalid settlement mode')
         def _insert() -> bool:
             now = datetime.now().isoformat()
             conn = sqlite3.connect(self.db_path)
@@ -3215,13 +3237,13 @@ class SQLiteClient:
                         INSERT INTO escrows
                           (escrow_uid, negotiation_id, status,
                            chain_name, escrow_address, is_primary,
-                           created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                           settlement_mode, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             escrow_uid, negotiation_id, status,
                             chain_name, escrow_address, 1 if is_primary else 0,
-                            now, now,
+                            settlement_mode, now, now,
                         ),
                     )
                     conn.commit()

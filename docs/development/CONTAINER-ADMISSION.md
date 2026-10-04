@@ -75,6 +75,112 @@ master [AEX programme](https://github.com/holonym-foundation/internal-docs/issue
   stop/lease orchestration remain required before marking ready. No continuation
   observation authorizes that adapter; no deployment is implied by these sources.
 
+## Manual retained settlement handoff (source only)
+
+`market_storefront.utils.capability_settlement_handoff` is the manual bridge from
+one exact `provisioned_pending_settlement` record to a separately reviewed host
+operation. It is not called by settle POST, status GET, a scheduler, or a tenant.
+Run it only in a trusted, single-threaded root host process with packaged SCM
+code. No sudo/SSH rule, launcher, session, approval producer or installation is
+provided by this SCM change. Its two CLI modes are `dispatch` and `observe`;
+stdin must be exactly canonical sorted JSON plus newline containing only
+`schema: 1` and `operationId: "sha256:<64 lowercase hex>"`.
+
+The deployable source entrypoint is
+`storefront/scripts/scm-capability-settlement-handoff`. A separately reviewed
+installation must copy that exact wrapper to
+`/usr/local/lib/aex-scm-settlement/continue` (root-owned 0555), and pin the hashes
+of exactly these four package files below the fixed root-owned, non-writable
+`/usr/local/lib/aex-scm-settlement/package` directory:
+
+- `market_storefront/__init__.py`
+- `market_storefront/utils/__init__.py`
+- `market_storefront/utils/settlement_continuation.py`
+- `market_storefront/utils/capability_settlement_handoff.py`
+
+The wrapper executes fixed `/usr/bin/python3 -I -S`, inserts only that protected
+package root and runs the manual module. Both package initializers are docstring
+only; the two modules use stdlib only. No global SCM virtualenv, mutable seller
+checkout, caller `PYTHONPATH`, user site or `.pth` initialization is permitted.
+After independent installation/approval review, the invocation shape is
+`/usr/local/lib/aex-scm-settlement/continue dispatch` (or `observe`) with the
+canonical reference supplied on stdin. This is a trusted host command, never an
+instruction to run as root inside the seller container or mount Docker there.
+The wrapper source does not install itself or authorize any reference.
+
+The fixed, root-owned, mode-0444 approval is
+`/run/aex-scm-authority/continuation.json`, projected by the trusted host boundary.
+It has exactly these fields (no caller-supplied transaction, path or environment):
+
+| Fields | Binding |
+| --- | --- |
+| `schema`, `stage`, `operationId` | Version 1; `fulfill` or `claim`; independently approved operation digest |
+| `databasePath` | Exactly `/var/lib/aex-scm/fresh-staging/seller/agent.db`; never the historical seller DB |
+| `databaseUid`, `databaseGid` | Positive non-root integers independently verified against the fresh runtime identity; no assumed numeric app UID |
+| `escrowUid`, `jobId` | Nonzero lowercase escrow UID and exact retained deterministic provisioning UUID |
+| `snapshotDigest`, `requestDigest`, `admissionId`, `resultDigest` | Exact frozen private snapshot, original request, UUIDv4 admission and observed provisioning result |
+| `notBefore`, `expiresAt` | Integer Unix seconds, at most one hour, inside the original nonrenewable continuation window |
+| `fulfillment` | Null for fulfill; for claim, exact prior `operationId`, nonzero `uid` and `txHash`, `receiptDigest`, `canonicalConfirmationDigest` |
+
+Digest fields are SHA-256 of canonical sorted JSON (UTF-8, compact separators,
+no nonfinite numbers), prefixed `sha256:`. The result digest uses the existing
+continuation's result SHA-256. Duplicate/unknown approval keys are refused.
+Claim approval must come from independently verified canonical fulfillment
+receipts; a root-file boolean or the seller's succeeded job is not chain proof.
+The host must independently check the ABI, signer, escrow, deployment bindings,
+fee budget, global stage/nonce claim and fulfillment receipt before any signing.
+This bridge additionally requires a prior retained fulfillment operation and its
+matching public transaction hash; it does not itself verify RPC receipts.
+
+All ancestors of the seller leaf must be root-owned, mode 0711 or 0755; the
+dedicated seller leaf is the approved UID/GID, mode 0700, and its existing SQLite
+file is mode 0600, regular and single-link. Root-private signer directories stay
+separate: do not make them traversable to satisfy this database contract.
+Canonical no-follow path, inode and ownership checks cover the DB and existing
+WAL/SHM/journal files. Each bounded database operation runs in a short child that
+permanently clears supplementary groups and drops GID/UID. The root parent never
+opens SQLite read-write, never restores child privileges and never creates seller
+sidecars as root. Missing files or an unknown UID refuse; no database is created.
+
+A durable intent is committed before the fixed root-owned mode-0555 command
+`/usr/local/lib/aex-scm-action-host/dispatch` receives the reference-only stdin.
+Every repeat dispatch, changed operation or lost acknowledgement refuses to sign
+again. Manual `observe` calls only
+`/usr/local/lib/aex-scm-action-host/observe`; it requires the same prior intent,
+can run after expiry and accepts only an `uncertain` historical result. No
+transaction is constructed, signed or retried by observation. The bridge's outer
+command budget is 510 seconds against the host's 480-second aggregate budget;
+the host must still recheck the policy window before signing and broadcasting.
+A timeout does not prove that descendants stopped or that nothing was signed.
+
+Only bounded public `{ok:true,result:{schema,operationId,outcome,txHash,nonce}}`
+results are retained. Missing, malformed, repeated, contradictory or failed output
+becomes uncertainty without echoing output. Submitted is not settled. Immutable
+intent/observation rows reject UPDATE, DELETE and INSERT OR REPLACE even with
+SQLite's default recursive triggers disabled. Idempotent observation checks
+compare the already-retained exact result instead of hiding conflicts with IGNORE.
+No escrow readiness/fulfillment, allocation release, listing close or tenant
+credential publication is performed by either mode.
+
+The initial settlement reservation now stores immutable `settlement_mode` before
+background work. `ListingService.claim` permits its historical SDK path only for
+an explicit original `legacy` row bound to the listing, with no contradictory
+capability job or continuation. Capability, missing and pre-migration NULL rows
+fail closed. Unknown rows are not inferred legacy or backfilled; UPDATE,
+delete/reinsert and REPLACE cannot downgrade their recorded mode. This is a
+fresh-state rollout, not permission to upgrade historical Hetzner obligations.
+
+Stdlib regression tests execute the actual initial dispatch, insert and claim
+methods plus real temporary SQLite/fork/pipe paths. Local tests mock credential
+changes and are not privileged-worker acceptance. A separate explicit Linux CI
+permission step runs real group/GID/UID drops in a new disposable `/run` fixture;
+it uses no signer, network, host command or installed seller paths. Neither test
+level proves live operation approval, useful output, settled costs or stop.
+
+Integration tracking: [AEX #581](https://github.com/holonym-foundation/aex/issues/581),
+parent [infrastructure #1347](https://github.com/holonym-foundation/internal-docs/issues/1347),
+master [AEX programme #2695](https://github.com/holonym-foundation/internal-docs/issues/2695).
+
 ## Rollout boundaries
 
 Preparation needs no schema migration: status is a string and preparation metadata

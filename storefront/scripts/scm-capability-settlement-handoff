@@ -1,0 +1,4 @@
+#!/bin/sh
+# Source only: reviewed root-owned installation and exact file hashes required.
+# Isolated stdlib Python; no caller PYTHONPATH, virtualenv, user site or .pth code.
+exec /usr/bin/python3 -I -S -c 'import runpy, sys; sys.path.insert(0, "/usr/local/lib/aex-scm-settlement/package"); runpy.run_module("market_storefront.utils.capability_settlement_handoff", run_name="__main__")' "$@"

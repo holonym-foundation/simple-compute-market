@@ -415,6 +415,12 @@ class ListingService:
         }
 
     async def claim(self, listing_id: str, payload: ClaimRequest) -> tuple[int, dict]:
+        # Original reservation mode is authoritative. Missing/unclassified state
+        # is NOT legacy, and buyer status/claim calls never trigger the host signer.
+        from market_storefront.utils.capability_settlement_handoff import legacy_claim_permitted
+        if not legacy_claim_permitted(getattr(self._db, 'db_path', None), payload.escrow_uid, listing_id):
+            return 409, {"error": "Manual retained settlement reconciliation required",
+                         "retry": False, "settlement_verified": False}
         if not self._alkahest_available:
             return 503, {"error": "On-chain escrow operations not configured",
                          "detail": "wallet.private_key and at least one [chains.<name>] entry must be set in storefront config."}
