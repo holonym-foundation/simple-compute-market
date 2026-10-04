@@ -56,6 +56,7 @@ class NegotiateController:
         )
 
         buyer_auth._verify(request, "negotiate_new", body.listing_id, body.buyer_address)
+        authenticated_buyer = buyer_auth.settlement_buyer_identity(request, body.buyer_address)
 
         base_url = BASE_URL_OVERRIDE or ""
         try:
@@ -67,6 +68,9 @@ class NegotiateController:
                 proposal=body.proposal,
                 our_base_url=base_url,
                 their_agent_url=body.buyer_agent_url or body.buyer_address,
+            )
+            await self._db.bind_authenticated_negotiation_buyer(
+                negotiation_id=result["negotiation_id"], buyer=authenticated_buyer,
             )
         except StorefrontPausedError as exc:
             raise HTTPException(status_code=503, detail={
@@ -109,6 +113,7 @@ class NegotiateController:
         from market_storefront.utils.sync_negotiation import continue_sync_negotiation
 
         buyer_auth._verify(request, "negotiate_continue", neg_id, body.buyer_address)
+        await buyer_auth.require_negotiation_owner(self._db, neg_id, body.buyer_address, request)
 
         if body.action == "counter" and body.proposal is None:
             raise HTTPException(status_code=400, detail="'proposal' required for counter")

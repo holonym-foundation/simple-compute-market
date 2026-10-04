@@ -52,14 +52,47 @@ master [AEX programme](https://github.com/holonym-foundation/internal-docs/issue
   as `held` (or retains the existing reservation if persisting the hold fails).
   The escrow remains fenced; no fulfillment, usable connection, refund, or
   replacement capacity is claimed. Repeated settle calls do not start new work.
-- No automatic cleanup or force-release is introduced. Reconciliation of a
-  timeout followed by successful remote completion still needs the coordinated
-  recovery procedure before marking the escrow ready or releasing capacity.
+- No automatic cleanup or force-release is introduced. Before the first
+  capability submission, the seller freezes a private SQLite continuation:
+  original order and encoded demand, negotiated duration, exact allocation,
+  deterministic job/container, normalized request digest, and a fixed observation
+  deadline (submission snapshot time plus duration). That window never renews.
+  The full private request can contain configuration: do not expose this table
+  through buyer APIs, logs, or CI evidence.
+- The existing repeated settle POST and authenticated status GET can observe
+  only that recorded job. They never reserve capacity, create or admit a job,
+  sign, register a new lease, or release an allocation. Missing legacy snapshots,
+  changed identities, retry metadata, invalid admission/result or lost responses
+  provide no recovery authority. A restart preserves the same fence.
+- A matching succeeded job records `provisioned_pending_settlement` internally.
+  The public escrow remains `provisioning`, its reason explicitly says settlement
+  is unverified, and its allocation remains held. No credentials, connection
+  details or fulfillment UID are published. Immediate capability success uses
+  this same gate and does not run the legacy unjournaled signing tail.
+- This observation is not proof of primary enrollment, mounted credentials,
+  useful delivery, runtime health now, or a verified chain settlement. A separate
+  exact transaction-policy/journal/receipt completion adapter and fixed-deadline
+  stop/lease orchestration remain required before marking ready. No continuation
+  observation authorizes that adapter; no deployment is implied by these sources.
 
 ## Rollout boundaries
 
-No schema migration is needed: status is a string and preparation metadata lives
-in the existing JSON params; `_build_params` passes only explicit Ansible fields.
+Preparation needs no schema migration: status is a string and preparation metadata
+lives in the existing JSON params; `_build_params` passes only explicit Ansible fields.
+The seller continuation adds a private `capability_settlement_continuations` table
+on first capability submission. Existing rows are never retrofitted from request
+parameters. Known static inference/ingest/TAP/wallet credential fields are refused
+before snapshot persistence; other private configuration remains private DB state.
+
+Negotiation creation now persists the signature-verified EIP-191 buyer in the
+existing `negotiation_threads.buyer` column before returning its ID. Continue,
+settle POST and status GET require that exact owner before dispatch or disclosure.
+The caller-controlled `buyer_agent_url` / `their_agent_id` is never authority,
+even when it looks like a wallet address. Historical rows without this verified
+binding fail closed and need separately reviewed provenance-based migration or a
+fresh negotiation, not a first-poller ownership claim. This also closes the old
+status endpoint's valid-but-unrelated-signer access to settlement credentials.
+
 Install seller/provisioner/controller versions together. Do not run an older
 worker against admitted jobs: it lacks the atomic claim and admission guard.
 Before rollback, quiesce submissions and resolve queued/running jobs; preserve

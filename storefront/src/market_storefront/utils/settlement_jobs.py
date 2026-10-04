@@ -192,6 +192,12 @@ async def start_settlement_job(
     if not inserted:
         # Already running or finished — return current state, idempotent.
         existing = await sqlite_client.load_escrow(escrow_uid=escrow_uid)
+        if not existing or existing.get("negotiation_id") != negotiation_id:
+            raise ValueError("Escrow is not bound to this negotiation")
+        await reconcile_retained_settlement(sqlite_client=sqlite_client, escrow_uid=escrow_uid)
+        existing = await sqlite_client.load_escrow(escrow_uid=escrow_uid)
+        if not existing or existing.get("negotiation_id") != negotiation_id:
+            raise ValueError("Escrow negotiation binding changed")
         logger.info(
             "[SETTLE_JOB] Job already exists for escrow %s: status=%s",
             escrow_uid, (existing or {}).get("status"),
@@ -244,6 +250,11 @@ async def _run_settlement_job_bg(
         )
     except Exception as exc:
         logger.exception("[SETTLE_JOB] fulfill_compute_obligation raised for %s", escrow_uid)
+        from .settlement_continuation import load_continuation
+        if load_continuation(sqlite_client.db_path, escrow_uid) is not None:
+            # Submission may already have happened. A failed local bookkeeping
+            # write must not turn the durable held fence into a failed deal.
+            return
         await sqlite_client.update_escrow(
             escrow_uid=escrow_uid,
             status="failed",
@@ -255,10 +266,14 @@ async def _run_settlement_job_bg(
     if status == "uncertain":
         # Preserve the existing escrow fence. A repeated POST returns this row
         # and cannot allocate/start a replacement while reconciliation is due.
-        await sqlite_client.update_escrow(
-            escrow_uid=escrow_uid, status="provisioning",
-            reason="reconciliation_required: capacity held; container outcome unconfirmed",
-        )
+        from .settlement_continuation import load_continuation
+        if load_continuation(sqlite_client.db_path, escrow_uid) is None:
+            await sqlite_client.update_escrow(
+                escrow_uid=escrow_uid, status="provisioning",
+                reason="reconciliation_required: capacity held; container outcome unconfirmed",
+            )
+        # The observer owns capability reason updates. A delayed original
+        # worker must not overwrite a late-success/expiry observation.
     elif status == "fulfilled":
         await sqlite_client.update_escrow(
             escrow_uid=escrow_uid,
@@ -280,6 +295,30 @@ async def _run_settlement_job_bg(
             "[SETTLE_JOB] Escrow %s provisioning did not succeed: %s",
             escrow_uid, reason,
         )
+
+
+async def reconcile_retained_settlement(*, sqlite_client, escrow_uid):
+    """Existing orchestration's read-only provisioner continuation seam.
+
+    No snapshot means no recovery authority. Transport failure keeps capacity
+    fenced. Signing/receipt completion is intentionally not connected yet.
+    """
+    from .settlement_continuation import load_continuation, reconcile_continuation
+    if load_continuation(sqlite_client.db_path, escrow_uid) is None:
+        return None
+    from client.provisioning_client import ProvisioningClient
+    from .config import settings
+    try:
+        async with ProvisioningClient(
+            settings.provisioning.service_url, admin_key=settings.admin_api_key,
+            timeout=float(settings.provisioning.timeout),
+        ) as client:
+            return await reconcile_continuation(
+                sqlite_client.db_path, escrow_uid, get_job=client.get_job,
+            )
+    except Exception:
+        logger.warning("[SETTLE_JOB] Retained job observation unavailable; capacity remains held")
+        return None
 
 
 def serialize_settlement_job(row: dict[str, Any]) -> dict[str, Any]:
