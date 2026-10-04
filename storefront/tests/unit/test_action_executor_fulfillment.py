@@ -190,8 +190,12 @@ async def test_reservation_closes_oversized_dynamic_listings(client, monkeypatch
     )
     monkeypatch.setattr(action_executor, "_do_shutdown", AsyncMock())
 
+    alkahest = MagicMock()
+    alkahest.string_obligation.do_obligation = AsyncMock(return_value="0x" + "44" * 32)
+    alkahest.oracle.request_arbitration = AsyncMock()
     result = await action_executor.fulfill_compute_obligation(
-        client=None,
+        client=alkahest,
+        oracle_address="0x" + "33" * 20,
         escrow_uid="escrow-2x",
         ssh_public_key="ssh-ed25519 AAAA",
         order=_compute_listing(gpu_count=2),
@@ -200,6 +204,9 @@ async def test_reservation_closes_oversized_dynamic_listings(client, monkeypatch
     )
 
     assert result["status"] == "fulfilled"
+    assert result["fulfillment_uid"] == "0x" + "44" * 32
+    alkahest.string_obligation.do_obligation.assert_awaited_once()
+    alkahest.oracle.request_arbitration.assert_awaited_once()
     assert action_executor._do_provision.await_args.kwargs["lease_id"] == "escrow-2x"
     statuses = {
         gpu_count: (await client.load_listing(listing_id=f"listing-{gpu_count}x"))[
@@ -274,3 +281,27 @@ async def test_capability_timeout_keeps_real_allocation_occupied(client, monkeyp
     assert state == "held"
     assert target == "tenant-" + uuid.uuid5(uuid.NAMESPACE_URL, "scm-container-lease:escrow-timeout").hex
     alkahest.string_obligation.do_obligation.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", ["client", "oracle", "blank_oracle", "both"])
+async def test_missing_settlement_configuration_refuses_before_any_effect(monkeypatch, missing):
+    def forbidden(*args, **kwargs):
+        pytest.fail("unconfigured settlement attempted an effect")
+
+    monkeypatch.setattr(action_executor, "get_sqlite_client", forbidden)
+    monkeypatch.setattr(action_executor, "_do_provision", forbidden)
+    monkeypatch.setattr(action_executor, "_do_shutdown", forbidden)
+    monkeypatch.setattr(action_executor, "stage_event", forbidden)
+    alkahest = None if missing in ("client", "both") else MagicMock()
+    oracle = None if missing in ("oracle", "both") else " " if missing == "blank_oracle" else "0x" + "33" * 20
+    result = await action_executor.fulfill_compute_obligation(
+        client=alkahest, oracle_address=oracle, escrow_uid="configuration-refusal", ssh_public_key="",
+        container_env={"AEX_CAPABILITY_DIRECTORY": "/run/aex/capabilities"},
+    )
+    assert result["status"] == "error"
+    assert result["connection_details"] is None
+    assert "fulfillment_uid" not in result
+    assert "required before provisioning" in result["message"]
+    if alkahest is not None:
+        assert alkahest.mock_calls == []
