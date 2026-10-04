@@ -153,7 +153,7 @@ def sign_message_eip191(message: str, credential: str) -> str:
     argv = [program] + [a.replace("{message}", message) for a in args]
     try:
         out = subprocess.run(argv, capture_output=True, text=True, timeout=120)
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, UnicodeError, subprocess.TimeoutExpired):
         raise RuntimeError("external signing outcome unavailable; reconcile before retry") from None
     if out.returncode != 0:
         # Command diagnostics can contain session material; never relay them.

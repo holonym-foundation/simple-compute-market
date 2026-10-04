@@ -187,7 +187,7 @@ def test_message_result_rejects_ambiguous_or_malformed_output(output):
         _message_signature(output)
 
 
-@pytest.mark.parametrize("failure", ["status", "timeout", "oserror"])
+@pytest.mark.parametrize("failure", ["status", "timeout", "oserror", "encoding"])
 def test_external_failure_is_sanitized_and_not_retried(monkeypatch, failure):
     calls = []
     def command(*args, **kwargs):
@@ -196,6 +196,8 @@ def test_external_failure_is_sanitized_and_not_retried(monkeypatch, failure):
             raise subprocess.TimeoutExpired(["secret-argument"], 120, output="session-secret")
         if failure == "oserror":
             raise OSError("session-secret")
+        if failure == "encoding":
+            raise UnicodeDecodeError("utf-8", b"session-secret\xff", 14, 15, "invalid output")
         return types.SimpleNamespace(returncode=1, stdout="session-secret", stderr="session-secret")
     monkeypatch.setattr(subprocess, "run", command)
     with pytest.raises(RuntimeError, match="reconcile before retry") as exc:
