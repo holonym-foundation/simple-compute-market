@@ -1413,7 +1413,7 @@ Golden image credentials (`golden_root_ssh_filename`, `golden_root_ssh_password`
 
 The `hosts` DB table is the single source of truth for KVM host inventory. The Ansible INI file is an *input format only* — it is never read at runtime except as input to `POST /hosts/import` or the `inventory_ini` startup seeder.
 
-**`hosts` table columns:** `name` (PK, Ansible alias), `kvm_host` (IP), `ssh_user`, `ssh_key_type` (`"path"` | `"embedded"`), `ssh_key_value`, `gpu_count`, `enabled`, `created_at`, `updated_at`.
+**`hosts` table columns:** `name` (PK, Ansible alias), `kvm_host` (IP), `host_type` (`"kvm"` | `"container"`), `ssh_user`, `ssh_key_type` (`"path"` | `"embedded"`), `ssh_key_value`, `gpu_count`, `enabled`, `created_at`, `updated_at`. Existing rows default to `host_type="kvm"`; container hosts are explicit so a resource cannot silently route to a VM host.
 
 **Column naming:** `kvm_host` and `ssh_user` — decoupled from Ansible's own variable names (`ansible_host`, `ansible_user`). Ansible variables are only introduced when the INI is rendered for a playbook run.
 
@@ -1434,7 +1434,7 @@ GET    /api/v1/hosts/{host}/connectivity   Run ansible -m ping
 
 **Disable vs. delete:** There is no hard delete endpoint. `POST /hosts/{host}/disable` sets `enabled=False`. Disabled hosts are excluded from `GET /hosts/` (default) and from inventory rendering.
 
-**Inventory rendering for Ansible:** `AnsibleService.write_inventory(hosts)` renders a temp INI file from DB rows immediately before each playbook run, deleted in the `finally` block — the same contract as `build_vars_file`. The rendered group is always `[kvm_hosts]`.
+**Inventory rendering for Ansible:** `AnsibleService.write_inventory(hosts)` renders a temp INI file from DB rows immediately before each playbook run, deleted in the `finally` block — the same contract as `build_vars_file`. KVM rows render under `[kvm_hosts]`; rows with `host_type="container"` render under `[container_hosts]`, which is the target group for `container-operations.yaml`.
 
 **Inventory seeding at startup:** `main.py` seeds the hosts table once during lifespan startup using the following logic:
 
@@ -1442,7 +1442,7 @@ GET    /api/v1/hosts/{host}/connectivity   Run ansible -m ping
 - **Source 1 — `inventory_ini` setting** (Helm/Kubernetes): the `provisioning-secrets` config profile carries this value. Used when deploying via Helm.
 - **Source 2 — `inventory_path` on disk** (Docker): the `docker` config profile sets `inventory_path` to the IAC hosts file baked into the image. Used when running the container standalone without a Helm-injected INI.
 
-**`[kvm_hosts]` group only:** `_parse_ini` imports only entries under the `[kvm_hosts]` INI group. Other groups in the IAC inventory (e.g. `[frp_servers]`, `[provisioning_servers]`) describe infrastructure that manages the provisioning service itself and are not relevant to VM provisioning.
+**Host groups:** `_parse_ini` imports `[kvm_hosts]` entries as KVM hosts and `[container_hosts]` entries as container hosts. Other groups in the IAC inventory (e.g. `[frp_servers]`, `[provisioning_servers]`) describe infrastructure that manages the provisioning service itself and are not imported as tenant capacity. Legacy rows without an explicit type remain KVM by default.
 
 **`gpus=` variable mapping:** The IAC inventory uses `gpus=N` to declare GPU count. `_parse_ini` maps this to the `gpu_count` column. `ansible_ssh_private_key_file=` is stored verbatim as the key path. All other Ansible variables are ignored.
 
@@ -2145,7 +2145,7 @@ This section defines the testing conventions for the Arkhai Market Stack. It exi
 - `AnsibleService`: `_build_vm_vars` (YAML serialisation of every field combination), `_extract_ssh_port` / `_extract_tenant_user` / `_extract_ansible_json` (output parsers against representative playbook output strings).
 - `AnsibleJobService`: `_build_params` (dict → `AnsibleJobParams` mapping), `_redact_logs` (regex redaction), `_calculate_retry_delay` (backoff arithmetic), `_should_retry_error` (error string matching), `_build_result_payload` (structured result assembly from `AnsibleRunResult`).
 - `models/vm_request_model.py`: `CreateVmRequest` Pydantic validation (FRP cross-field rule, field constraints), `ScheduleVmExpiryRequest` required field, `build_simple_params` action routing.
-- `HostService`: `seed_from_ini` (INI parsing, upsert idempotency), `register_host` with `embedded` key (Fernet encryption round-trip), `render_inventory_ini` (correct `[kvm_hosts]` group + variable output), `list_hosts(enabled_only=True)` filter.
+- `HostService`: `seed_from_ini` (INI parsing, upsert idempotency and host-type mapping), `register_host` with `embedded` key (Fernet encryption round-trip), `render_inventory_ini` (separate `[kvm_hosts]`/`[container_hosts]` output + variable mapping), `list_hosts(enabled_only=True)` filter.
 
 **Mocking convention:** Use `unittest.mock.MagicMock` / `AsyncMock` for injected collaborators. Do not patch module-level imports; instead, pass mocks in via the constructor (the DI design makes this natural).
 
