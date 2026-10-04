@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import dataclasses
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -191,6 +192,9 @@ async def _do_provision(
     in the settlement_jobs row so the buyer's GET /settle/{uid}/status can
     surface it while the job is still queued/running.
     """
+    if isinstance(container_env, dict) and "AEX_CAPABILITY_DIRECTORY" in container_env:
+        if not isinstance(lease_id, str) or not lease_id:
+            raise ValueError("capability_lease_required")
     client = ProvisioningClient(
         settings.provisioning.service_url,
         admin_key=settings.admin_api_key,
@@ -217,6 +221,10 @@ async def _do_provision(
             submit = await client.create_container(
                 vm_host, CreateContainerRequest(**_req)
             )
+            if isinstance(container_env, dict) and "AEX_CAPABILITY_DIRECTORY" in container_env:
+                expected_job = str(uuid.uuid5(uuid.NAMESPACE_URL, "scm-container-lease:" + lease_id))
+                if submit.job_id != expected_job:
+                    raise ValueError("capability_provisioning_job_changed")
             if on_job_submitted is not None:
                 try:
                     await on_job_submitted(submit.job_id)
@@ -824,6 +832,10 @@ async def fulfill_compute_obligation(
             )
 
         async def _record_job_id(job_id: str) -> None:
+            if capability_request:
+                expected_job = str(uuid.uuid5(uuid.NAMESPACE_URL, "scm-container-lease:" + escrow_uid))
+                if job_id != expected_job:
+                    raise ValueError("capability_provisioning_job_changed")
             await get_sqlite_client().update_escrow(
                 escrow_uid=escrow_uid,
                 provisioning_job_id=job_id,
@@ -845,6 +857,21 @@ async def fulfill_compute_obligation(
         # creds), carried in ProvisionTerms via the settle request → start_settlement_job →
         # here (the `container_env` arg) — the same path ssh_public_key takes. (NOT the
         # resource attrs, which are shared across every deal on the listing.)
+        if capability_request:
+            from .settlement_continuation import freeze_continuation
+            if str(_attrs.get("virtualization_type") or "vm") != "container":
+                raise ValueError("capability_requires_container_resource")
+            request = CreateContainerRequest(
+                container_target=vm_target, container_image=_attrs.get("container_image") or None,
+                container_env=container_env, lease_id=escrow_uid, max_retries=0,
+            )
+            freeze_continuation(
+                sqlite_client.db_path, escrow_uid=escrow_uid,
+                allocation_id=reserved_allocation_id, resource_id=reserved_resource_id,
+                listing_id=listing_id or order_id, order=order_dict,
+                demand_hex=order_bytes.hex(), duration_seconds=duration_seconds,
+                params=dataclasses.asdict(request.to_ansible_job_params(reserved_vm_host)),
+            )
         provisioning_dispatched = True
         provision_result = await _do_provision(
             ssh_public_key,
@@ -856,6 +883,15 @@ async def fulfill_compute_obligation(
             lease_id=escrow_uid,
             on_job_submitted=_record_job_id,
         )
+        if capability_request:
+            # Never run the unjournaled legacy signing tail, even for immediate
+            # success. The same retained-job observer serves original and late
+            # completion; provisioner success is not verified settlement.
+            from .settlement_jobs import reconcile_retained_settlement
+            await reconcile_retained_settlement(sqlite_client=sqlite_client, escrow_uid=escrow_uid)
+            return {"status": "uncertain", "escrow_uid": escrow_uid,
+                    "message": "Capability provisioning observed; settlement verification required",
+                    "connection_details": None}
         # Split credentials out before serialising — passwords must never touch on-chain data.
         authentication: dict | None = None
         if isinstance(provision_result, dict):

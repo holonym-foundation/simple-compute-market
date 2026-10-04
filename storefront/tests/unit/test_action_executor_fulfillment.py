@@ -235,7 +235,9 @@ async def test_container_provisioning_preserves_settled_lease_binding(
     transport = MagicMock()
     transport.__aenter__ = AsyncMock(return_value=transport)
     transport.__aexit__ = AsyncMock(return_value=None)
-    transport.create_container = AsyncMock(return_value=SimpleNamespace(job_id="job-1"))
+    import uuid
+    job_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "scm-container-lease:" + lease_id)) if capability_env and lease_id else "job-1"
+    transport.create_container = AsyncMock(return_value=SimpleNamespace(job_id=job_id))
     transport.poll_until_complete = AsyncMock(
         return_value=SimpleNamespace(result={"container_name": "tenant-test", "lease_id": lease_id})
     )
@@ -244,6 +246,14 @@ async def test_container_provisioning_preserves_settled_lease_binding(
     # A buyer's environment cannot select the provisioning request's lease ID.
     env = {"AEX_AGENT_ID": "test-agent", "lease_id": "buyer-controlled", **capability_env}
     submitted = AsyncMock()
+    if capability_env and lease_id is None:
+        with pytest.raises(ValueError, match="capability_lease_required"):
+            await action_executor._do_provision(
+                "", vm_host="host-1", vm_target="tenant-test", virtualization_type="container",
+                container_env=env, lease_id=lease_id,
+            )
+        transport.create_container.assert_not_awaited()
+        return
     result = await action_executor._do_provision(
         "", vm_host="host-1", vm_target="tenant-test", virtualization_type="container",
         container_image="registry.example/runtime@sha256:" + "a" * 64,
@@ -265,13 +275,23 @@ async def test_container_provisioning_preserves_settled_lease_binding(
     assert params.container_env == env
     assert params.max_retries == expected_retries
     assert result["lease_id"] == lease_id
-    submitted.assert_awaited_once_with("job-1")
+    submitted.assert_awaited_once_with(job_id)
     transport.create_container.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_capability_timeout_keeps_real_allocation_occupied(client, monkeypatch):
     await _seed_compute_pool(client)
+    await client.upsert_resource(
+        resource_id="pool-h200-1", resource_type="compute.gpu", resource_subtype="h200",
+        unit="count", value=1, state="available", attributes={
+            "gpu_model": "H200", "region": "California, US", "vm_host": "host-1",
+            "virtualization_type": "container",
+            "container_image": "registry.example/runtime@sha256:" + "a" * 64,
+        },
+    )
+    await client.insert_escrow(escrow_uid="escrow-timeout", negotiation_id="neg-timeout",
+                              chain_name="base_sepolia", escrow_address="0x" + "11" * 20)
     monkeypatch.setattr(action_executor, "get_sqlite_client", lambda: client)
     provision = AsyncMock(side_effect=TimeoutError("reply lost after create request"))
     monkeypatch.setattr(action_executor, "_do_provision", provision)

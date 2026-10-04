@@ -3052,6 +3052,25 @@ class SQLiteClient:
 
         await asyncio.to_thread(_save)
 
+    async def bind_authenticated_negotiation_buyer(self, *, negotiation_id: str, buyer: str) -> None:
+        """Write once after negotiate-new signature verification, before response.
+
+        Never call this from settle/poll to retrofit ownership onto old rows.
+        """
+        import re
+        if not isinstance(buyer, str) or not re.fullmatch(r"0x[0-9a-f]{40}", buyer):
+            raise ValueError("invalid_authenticated_buyer")
+        def _bind():
+            from contextlib import closing
+            with closing(sqlite3.connect(self.db_path)) as con, con:
+                con.execute("BEGIN IMMEDIATE")
+                row = con.execute("SELECT buyer FROM negotiation_threads WHERE negotiation_id=?",
+                                  (negotiation_id,)).fetchone()
+                if not row or row[0] not in (None, buyer):
+                    raise ValueError("negotiation_buyer_conflict")
+                con.execute("UPDATE negotiation_threads SET buyer=? WHERE negotiation_id=?", (buyer, negotiation_id))
+        await asyncio.to_thread(_bind)
+
     async def load_negotiation_thread_row(
         self,
         *,

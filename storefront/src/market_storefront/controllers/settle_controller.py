@@ -29,6 +29,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/settle", tags=["settle"])
 
 
+async def require_settlement_owner(db, negotiation_id, buyer_address, request):
+    """A valid arbitrary signature is not ownership of an escrow/negotiation.
+
+    Legacy URL-only identities have no wallet binding; fail closed rather than
+    infer an address from a URL or whichever caller first polls the escrow.
+    """
+    await buyer_auth.require_negotiation_owner(db, negotiation_id, buyer_address, request)
+
+
 @cbv(router)
 class SettleController:
     def __init__(
@@ -58,6 +67,10 @@ class SettleController:
         )
 
         buyer_auth._verify(request, "settle_escrow", escrow_uid, body.buyer_address)
+        await require_settlement_owner(self._db, body.negotiation_id, body.buyer_address, request)
+        existing = await self._db.load_escrow(escrow_uid=escrow_uid)
+        if existing and existing.get("negotiation_id") != body.negotiation_id:
+            raise HTTPException(status_code=404, detail="Settlement not found for this buyer")
 
         alkahest = _container.get_alkahest_client(body.chain_name)
         if alkahest is None:
@@ -102,11 +115,18 @@ class SettleController:
         request: Request,
         buyer_address: str = Query(description="Buyer wallet address for EIP-191 verification"),
     ) -> SettleStatusResponse:
-        from market_storefront.utils.settlement_jobs import serialize_settlement_job
+        from market_storefront.utils.settlement_jobs import serialize_settlement_job, reconcile_retained_settlement
 
         buyer_auth._verify(request, "settle_status", escrow_uid, buyer_address)
 
+        original = await self._db.load_escrow(escrow_uid=escrow_uid)
+        if not original:
+            raise HTTPException(status_code=404, detail="Settlement not found for this buyer")
+        await require_settlement_owner(self._db, original["negotiation_id"], buyer_address, request)
+        await reconcile_retained_settlement(sqlite_client=self._db, escrow_uid=escrow_uid)
         job = await self._db.load_escrow(escrow_uid=escrow_uid)
+        if job and job.get("negotiation_id") != original["negotiation_id"]:
+            raise HTTPException(status_code=404, detail="Settlement not found for this buyer")
         if not job:
             raise HTTPException(status_code=404, detail=f"No settlement job for escrow {escrow_uid}")
         return SettleStatusResponse(**serialize_settlement_job(job))

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import time
+import re
 
 from fastapi import HTTPException, Request
 
@@ -31,6 +32,25 @@ logger = logging.getLogger(__name__)
 
 _MAX_TIMESTAMP_SKEW = 300  # seconds
 _DEFAULT_SCHEME = "eip191"
+
+
+def settlement_buyer_identity(request, claimed_address):
+    """Use only after _verify; reject a different header scheme/identity."""
+    identity = _resolve_buyer_identity(request, claimed_address)
+    if (identity.scheme != "eip191" or identity.identifier != claimed_address.lower()
+            or not re.fullmatch(r"0x[0-9a-f]{40}", identity.identifier)):
+        raise HTTPException(status_code=403, detail="EIP-191 buyer identity required")
+    return identity.identifier
+
+
+async def require_negotiation_owner(db, negotiation_id, buyer_address, request):
+    identity = settlement_buyer_identity(request, buyer_address)
+    thread = await db.load_negotiation_thread_row(negotiation_id=negotiation_id)
+    # their_agent_id is buyer_agent_url, an untrusted routing label that can even
+    # look like somebody else's wallet. Never use it as ownership evidence.
+    owner = (thread or {}).get("buyer")
+    if not isinstance(owner, str) or owner != identity:
+        raise HTTPException(status_code=404, detail="Negotiation not found for this buyer")
 
 
 def _resolve_buyer_identity(request: Request, claimed_address: str) -> Identity:
