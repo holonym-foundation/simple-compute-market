@@ -69,6 +69,10 @@ jobs:
         working-directory: storefront
         run: uv run pytest tests/unit tests/integration -q
 
+      - name: Test external signer response contracts without a wallet or network
+        working-directory: storefront
+        run: uv run pytest ../service/tests/unit/test_signing.py -q
+
       - name: Test provisioning admission and existing worker paths
         working-directory: storefront
         env:

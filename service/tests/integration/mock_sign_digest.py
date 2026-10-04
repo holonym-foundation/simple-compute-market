@@ -13,26 +13,30 @@ Usage: mock_sign_digest.py 0x<64-hex-digest>
 from __future__ import annotations
 
 import os
+import json
 import sys
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: mock_sign_digest.py 0x<digest>", file=sys.stderr)
+    typed_data = len(sys.argv) == 3 and sys.argv[1] == "--typed-data"
+    if len(sys.argv) != 2 and not typed_data:
+        print("usage: mock_sign_digest.py 0x<digest> | --typed-data <json>", file=sys.stderr)
         return 2
     key = os.environ.get("MOCK_SIGNER_KEY", "")
     if not key:
         print("MOCK_SIGNER_KEY not set", file=sys.stderr)
         return 2
-    digest_hex = sys.argv[1].strip()
-    digest = bytes.fromhex(digest_hex[2:] if digest_hex.startswith("0x") else digest_hex)
-    if len(digest) != 32:
-        print(f"digest must be 32 bytes, got {len(digest)}", file=sys.stderr)
-        return 2
-
     from eth_account import Account
-
-    signed = Account.unsafe_sign_hash(digest, private_key=key)
+    if typed_data:
+        from eth_account.messages import encode_typed_data
+        signed = Account.sign_message(encode_typed_data(full_message=json.loads(sys.argv[2])), key)
+    else:
+        digest_hex = sys.argv[1].strip()
+        digest = bytes.fromhex(digest_hex[2:] if digest_hex.startswith("0x") else digest_hex)
+        if len(digest) != 32:
+            print(f"digest must be 32 bytes, got {len(digest)}", file=sys.stderr)
+            return 2
+        signed = Account.unsafe_sign_hash(digest, private_key=key)
     sig = signed.signature.hex()
     print(sig if sig.startswith("0x") else "0x" + sig)
     return 0

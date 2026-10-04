@@ -25,12 +25,22 @@ deployments can pin exact CLI flags without code changes:
   a 65-byte hex ECDSA signature to stdout.
 * ``ARKHAI_SIGNER_MESSAGE_CMD`` — default ``waap-cli sign-message {message}``;
   receives the raw text via ``{message}`` and must print a 65-byte hex EIP-191
-  signature to stdout.
+  signature or the exact WaaP 2.2.0 JSON result to stdout. The result is recovered
+  against the exact message and configured wallet before returning it.
+
+These historical default commands are not a reviewed WaaP activation config.
+WaaP 2.2.0 requires an explicit chain and structured payload flags; it does not
+provide the historical raw-digest command. Configure a reviewed bounded adapter.
+The SDK has one executable for digest and typed-data argument templates; different
+executables are refused, not silently substituted. This response validation is
+not an operation allowlist, session isolation or durable unknown-outcome recovery.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shlex
 import subprocess
 from typing import Any, Optional
@@ -49,13 +59,44 @@ def is_external_signer(credential: Optional[str]) -> bool:
 
 def external_signer_address(credential: str) -> str:
     """Extract the signer's 0x address from a ``waap:<address>`` credential."""
-    addr = credential[len(WAAP_PREFIX):].strip()
-    if not addr.startswith("0x") or len(addr) != 42:
-        raise ValueError(
-            f"malformed external-signer credential {credential!r}; expected "
-            f"'waap:0x<40 hex chars>'"
-        )
+    if not isinstance(credential, str) or not credential.startswith(WAAP_PREFIX):
+        raise ValueError("malformed external-signer credential")
+    addr = credential[len(WAAP_PREFIX):]
+    if not re.fullmatch(r"0x[0-9a-fA-F]{40}", addr) or int(addr[2:], 16) == 0:
+        raise ValueError("malformed external-signer credential")
     return addr
+
+
+def _message_signature(output: str) -> str:
+    """Accept one raw signature or the pinned WaaP JSON result, never log scraping.
+
+    WaaP 2.2.0 emits {event: result, signature: ...} in JSON mode. Repeated
+    results (even identical), duplicate JSON keys, progress/error records and
+    nested signature lookalikes are not successful output.
+    """
+    if not isinstance(output, str) or len(output.encode("utf-8")) > 16384:
+        raise RuntimeError("external signer response unavailable")
+    value = output.strip()
+    if value.startswith("{"):
+        def unique_object(pairs):
+            result = {}
+            for key, item in pairs:
+                if key in result:
+                    raise ValueError("duplicate result key")
+                result[key] = item
+            return result
+
+        try:
+            result = json.loads(value, object_pairs_hook=unique_object)
+            if set(result) != {"event", "signature"} or result["event"] != "result":
+                raise ValueError("unexpected result")
+            value = result["signature"]
+        except (ValueError, TypeError, RecursionError):
+            raise RuntimeError("external signer response unavailable") from None
+    # Legacy reviewed command adapters print raw hex, sometimes without 0x.
+    if not isinstance(value, str) or not re.fullmatch(r"(?:0x)?[0-9a-fA-F]{130}", value):
+        raise RuntimeError("external signer response unavailable")
+    return value if value.startswith("0x") else "0x" + value
 
 
 def digest_command() -> tuple[str, list[str]]:
@@ -104,18 +145,29 @@ def sign_message_eip191(message: str, credential: str) -> str:
         ).signature.hex()
         return sig if sig.startswith("0x") else "0x" + sig
 
+    # Validate the controller-selected identity and payload before any subprocess.
+    address = external_signer_address(credential)
+    if not isinstance(message, str) or not 0 < len(message.encode("utf-8")) <= 8192:
+        raise ValueError("invalid external signing message")
     program, args = message_command()
     argv = [program] + [a.replace("{message}", message) for a in args]
-    out = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    except (OSError, UnicodeError, subprocess.TimeoutExpired):
+        raise RuntimeError("external signing outcome unavailable; reconcile before retry") from None
     if out.returncode != 0:
-        raise RuntimeError(
-            f"external signer command {program!r} failed "
-            f"(rc={out.returncode}): {out.stderr.strip()[:500]}"
-        )
-    sig = out.stdout.strip()
-    if not sig:
-        raise RuntimeError(f"external signer command {program!r} printed no signature")
-    return sig if sig.startswith("0x") else "0x" + sig
+        # Command diagnostics can contain session material; never relay them.
+        raise RuntimeError("external signing outcome unavailable; reconcile before retry")
+    sig = _message_signature(out.stdout)
+    from eth_account import Account
+    from eth_account.messages import encode_defunct
+    try:
+        recovered = Account.recover_message(encode_defunct(text=message), signature=sig)
+    except Exception:
+        raise RuntimeError("external signer signature invalid") from None
+    if recovered.lower() != address.lower():
+        raise RuntimeError("external signer identity mismatch")
+    return sig
 
 
 def make_alkahest_client(
@@ -144,7 +196,11 @@ def make_alkahest_client(
     program, args = digest_command()
     # Prefer the structured EIP-712 path (sign-typed-data) — alkahest forwards typed
     # data instead of an opaque digest, so the WaaP policy engine can risk-assess it.
-    _, typed_data_args = typed_data_command()
+    typed_program, typed_data_args = typed_data_command()
+    # The SDK accepts one executable and two argument templates. Silently
+    # dropping a distinct typed-data executable could select the wrong signer.
+    if typed_program != program:
+        raise ValueError("digest and typed-data signing must use the same executable")
     return AlkahestClient.with_command_signer(
         program, args, address, rpc_url, address_config,
         typed_data_args=typed_data_args,

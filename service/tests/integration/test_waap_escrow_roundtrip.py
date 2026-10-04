@@ -120,6 +120,9 @@ def test_waap_escrow_roundtrip(tmp_path: pathlib.Path, monkeypatch) -> None:
     monkeypatch.setenv(
         "ARKHAI_SIGNER_DIGEST_CMD", f"{sys.executable} {mock_signer} {{digest}}"
     )
+    monkeypatch.setenv(
+        "ARKHAI_SIGNER_TYPED_DATA_CMD", f"{sys.executable} {mock_signer} --typed-data {{typed_data}}"
+    )
     monkeypatch.setenv("MOCK_SIGNER_KEY", WAAP_KEY)
 
     network = get_alkahest_network("anvil")
